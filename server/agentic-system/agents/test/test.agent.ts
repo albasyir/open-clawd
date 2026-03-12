@@ -3,6 +3,8 @@ import { createAgent } from 'langchain'
 import { MemorySaver } from '@langchain/langgraph'
 import OpenAICodexModel from '../../models/open-ai-codex'
 import cliTool from './tools/cli'
+import getWeatherTool from './tools/get-weather'
+import mathTool from './tools/math'
 
 const llmParams = {
   model: 'gpt-5',
@@ -23,6 +25,6 @@ export default createAgent({
     llmParams,
     llmToolCallParams,
   }),
-  tools: [cliTool],
+  tools: [cliTool, getWeatherTool, mathTool],
   checkpointer,
 })

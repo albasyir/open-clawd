@@ -6,10 +6,9 @@ const _useDashboard = () => {
   const isNotificationsSlideoverOpen = ref(false)
 
   defineShortcuts({
-    'g-h': () => router.push('/'),
     'g-i': () => router.push('/agents'),
-    'g-c': () => router.push('/customers'),
-    'g-s': () => router.push('/settings')
+    'g-t': () => router.push('/tools'),
+    'g-m': () => router.push('/models')
   })
 
   watch(() => route.fullPath, () => {

@@ -5,23 +5,20 @@ defineProps<{
   collapsed?: boolean
 }>()
 
+const dicebear = (style: string, seed: string) =>
+  `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(seed)}`
+
 const teams = ref([{
-  label: 'Nuxt',
+  label: 'XZen',
   avatar: {
-    src: 'https://github.com/nuxt.png',
-    alt: 'Nuxt'
+    src: dicebear('initials', 'XZen'),
+    alt: 'XZen'
   }
 }, {
-  label: 'NuxtHub',
+  label: 'Albasyir NET',
   avatar: {
-    src: 'https://github.com/nuxt-hub.png',
-    alt: 'NuxtHub'
-  }
-}, {
-  label: 'NuxtLabs',
-  avatar: {
-    src: 'https://github.com/nuxtlabs.png',
-    alt: 'NuxtLabs'
+    src: dicebear('initials', 'Albasyir NET'),
+    alt: 'Albasyir NET'
   }
 }])
 const selectedTeam = ref(teams.value[0])
@@ -34,10 +31,12 @@ const items = computed<DropdownMenuItem[][]>(() => {
     }
   })), [{
     label: 'Create team',
-    icon: 'i-lucide-circle-plus'
+    icon: 'i-lucide-circle-plus',
+    disabled: true
   }, {
     label: 'Manage teams',
-    icon: 'i-lucide-cog'
+    icon: 'i-lucide-cog',
+    disabled: true
   }]]
 })
 </script>
