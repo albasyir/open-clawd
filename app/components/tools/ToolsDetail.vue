@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import type { ToolFile } from '~/types'
 
-const props = defineProps<{
-  tool: ToolFile
-}>()
+const props = withDefaults(
+  defineProps<{
+    tool: ToolFile
+    /** When set, use this base for save/test (e.g. /api/agents/test). Omit for global /api/tools. */
+    toolsApiBase?: string
+  }>(),
+  { toolsApiBase: '' }
+)
+
+const toolsBase = computed(() => (props.toolsApiBase || '/api/tools').replace(/\/$/, ''))
+const isSymlink = computed(() => !!props.tool.symlink)
 
 const emits = defineEmits<{
   close: []
@@ -65,7 +73,7 @@ async function runTest() {
   testResult.value = null
   try {
     const res = await $fetch<{ success: boolean; result?: unknown; error?: string }>(
-      `/api/tools/${props.tool.id}/test`,
+      `${toolsBase.value}/${props.tool.id}/test`,
       { method: 'POST', body: { input: inputObj } }
     )
     testResult.value = res
@@ -87,7 +95,7 @@ async function save(): Promise<boolean> {
   if (saving.value) return false
   saving.value = true
   try {
-    await $fetch(`/api/tools/${props.tool.id}`, {
+    await $fetch(`${toolsBase.value}/${props.tool.id}`, {
       method: 'PUT',
       body: { content: code.value }
     })
@@ -123,15 +131,16 @@ defineShortcuts({
   }
 })
 
-const editorOptions = {
+const editorOptions = computed(() => ({
   automaticLayout: true,
   formatOnType: true,
   formatOnPaste: true,
   minimap: { enabled: true },
   fontSize: 13,
   lineNumbers: 'on' as const,
-  wordWrap: 'on' as const
-}
+  wordWrap: 'on' as const,
+  readOnly: isSymlink.value
+}))
 </script>
 
 <template>
@@ -148,6 +157,7 @@ const editorOptions = {
       </template>
       <template #right>
         <UButton
+          v-if="!isSymlink"
           icon="i-lucide-play"
           color="neutral"
           variant="outline"
@@ -155,6 +165,7 @@ const editorOptions = {
           @click="onSaveAndTestClick"
         />
         <UButton
+          v-if="!isSymlink"
           icon="i-lucide-save"
           color="primary"
           :loading="saving"
@@ -165,7 +176,27 @@ const editorOptions = {
     </UDashboardNavbar>
 
     <div class="flex-1 flex flex-col min-h-0 p-4 sm:p-6">
-      <p v-if="!tool.content" class="text-muted-foreground">
+      <div v-if="isSymlink" class="mb-3 flex flex-col gap-3">
+        <p class="text-sm text-dimmed">
+          This tool is a symlink and can't be edited here.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <UButton
+            color="neutral"
+            variant="outline"
+            label="Copy tool for this agent"
+            disabled
+          />
+          <UButton
+            color="primary"
+            variant="outline"
+            label="Edit globally"
+            :to="`/tools/${tool.id}`"
+            icon="i-lucide-external-link"
+          />
+        </div>
+      </div>
+      <p v-if="!tool.content && !isSymlink" class="text-muted-foreground">
         Nothing here
       </p>
       <ClientOnly v-else>

@@ -1,7 +1,7 @@
 /**
  * Registry of all runnable agents. Add new agents here when you create a new *.agent.ts file.
  */
-import testAgent from './test.agent'
+import testAgent from './test/test.agent'
 
 export type AgentInvokeConfig = { configurable?: { thread_id?: string } }
 

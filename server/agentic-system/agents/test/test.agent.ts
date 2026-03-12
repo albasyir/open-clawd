@@ -1,9 +1,8 @@
 import 'dotenv/config'
 import { createAgent } from 'langchain'
 import { MemorySaver } from '@langchain/langgraph'
-import OpenAICodexModel from '../models/open-ai-codex'
-import getWeatherTool from '../tools/get-weather'
-import mathTool from '../tools/math'
+import OpenAICodexModel from '../../models/open-ai-codex'
+import cliTool from './tools/cli'
 
 const llmParams = {
   model: 'gpt-5',
@@ -24,6 +23,6 @@ export default createAgent({
     llmParams,
     llmToolCallParams,
   }),
-  tools: [getWeatherTool, mathTool],
+  tools: [cliTool],
   checkpointer,
 })

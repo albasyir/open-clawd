@@ -21,6 +21,7 @@ const emit = defineEmits<{
 
 const message = ref('')
 const localSending = ref(false)
+const toolsSlideoverOpen = ref(false)
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
 
@@ -54,8 +55,13 @@ function onSubmit() {
         <UTooltip text="New chat">
           <UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="emit('newChat')" />
         </UTooltip>
-        <UTooltip text="More">
-          <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
+        <UTooltip text="Manage tools">
+          <UButton
+            icon="i-lucide-wrench"
+            color="neutral"
+            variant="ghost"
+            @click="toolsSlideoverOpen = true"
+          />
         </UTooltip>
       </template>
     </UDashboardNavbar>
@@ -152,7 +158,9 @@ function onSubmit() {
       </template>
       <template #right>
         <UTooltip text="New chat"><UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="emit('newChat')" /></UTooltip>
-        <UTooltip text="More"><UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" /></UTooltip>
+        <UTooltip text="Manage tools">
+          <UButton icon="i-lucide-wrench" color="neutral" variant="ghost" @click="toolsSlideoverOpen = true" />
+        </UTooltip>
       </template>
     </UDashboardNavbar>
     <div class="flex items-center gap-4 border-b border-default shrink-0 p-4 sm:px-6">
@@ -215,4 +223,10 @@ function onSubmit() {
       </UCard>
     </div>
   </div>
+
+  <AgentToolsSlideover
+    v-model:open="toolsSlideoverOpen"
+    :agent-id="conversation.id"
+    :agent-name="conversation.agent.name"
+  />
 </template>

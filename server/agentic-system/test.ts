@@ -1,4 +1,4 @@
-import agent from "./agents/test.agent";
+import agent from "./agents/test/test.agent";
 
 console.log('Running agent...');
 

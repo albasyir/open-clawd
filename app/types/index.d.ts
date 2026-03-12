@@ -63,6 +63,8 @@ export interface ToolFile {
   id: string
   name: string
   content?: string
+  /** When true, this tool is a symlink and cannot be edited here. */
+  symlink?: boolean
 }
 
 export interface ModelFile {
