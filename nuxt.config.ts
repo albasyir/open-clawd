@@ -27,5 +27,13 @@ export default defineNuxtConfig({
         braceStyle: '1tbs'
       }
     }
+  },
+
+  nitro: {
+    esbuild: {
+      options: {
+        target: 'es2022'
+      }
+    }
   }
 })

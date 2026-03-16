@@ -2,45 +2,32 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { join } from 'node:path'
 import { z } from 'zod'
 
-/** e.g. get-weather -> getWeatherTool, math -> mathTool */
-function toolNameToVar(name: string): string {
-  const camel = name
-    .split(/[-_]/)
-    .map((part, i) => (i === 0 ? part.toLowerCase() : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()))
-    .join('')
-  return `${camel}Tool`
-}
-
-function updateAgentFile(agentId: string, toolName: string): void {
+/** Add a dynamic import entry to the agent's tool.ts file. */
+function updateToolFile(agentId: string, toolName: string): void {
   const agentDir = join(process.cwd(), 'server', 'agentic-system', 'agents', agentId)
-  const agentPath = join(agentDir, `${agentId}.agent.ts`)
-  if (!existsSync(agentPath)) return
+  const toolFilePath = join(agentDir, 'tool.ts')
+  if (!existsSync(toolFilePath)) return
 
-  const varName = toolNameToVar(toolName)
-  const newImport = `import ${varName} from './tools/${toolName}'`
-  let content = readFileSync(agentPath, 'utf-8')
+  const newEntry = `    (await import('./tools/${toolName}')).default`
+  let content = readFileSync(toolFilePath, 'utf-8')
 
-  if (content.includes(newImport)) return
+  // Already registered
+  if (content.includes(`'./tools/${toolName}'`)) return
 
-  const lines = content.split('\n')
-  let lastToolImportIndex = -1
-  for (let i = 0; i < lines.length; i++) {
-    if (/from\s+['"]\.\/tools\//.test(lines[i]!)) lastToolImportIndex = i
-  }
-  if (lastToolImportIndex >= 0) {
-    lines.splice(lastToolImportIndex + 1, 0, newImport)
-    content = lines.join('\n')
-  }
+  // Insert before the closing bracket of the exported array
+  // Pattern: find the last `]` that closes `export default [`
+  const closingBracketIndex = content.lastIndexOf(']')
+  if (closingBracketIndex === -1) return
 
-  const toolsArrayRegex = /(tools:\s*\[)([\s\S]*?)(\],)/
-  const match = content.match(toolsArrayRegex)
-  if (match) {
-    const inner = match[2]!.trim()
-    const newInner = inner ? `${inner}, ${varName}` : varName
-    content = content.replace(toolsArrayRegex, `$1${newInner}$3`)
-  }
+  const before = content.slice(0, closingBracketIndex).trimEnd()
+  const after = content.slice(closingBracketIndex)
 
-  writeFileSync(agentPath, content, 'utf-8')
+  // Check if the array already has entries (need a comma)
+  const hasEntries = before.includes('(await import(')
+  const separator = hasEntries ? ',\n' : '\n'
+
+  content = before + separator + newEntry + '\n' + after
+  writeFileSync(toolFilePath, content, 'utf-8')
 }
 
 const NEW_TOOL_TEMPLATE = `import { tool } from 'langchain'
@@ -72,7 +59,7 @@ export default defineEventHandler(async (event) => {
   const rawBody = await readBody(event)
   const result = createToolBodySchema.safeParse(rawBody)
   if (!result.success) {
-    const msg = result.error.errors.map((e) => e.message).join('; ')
+    const msg = result.error.issues.map((e: { message: string }) => e.message).join('; ')
     throw createError({ statusCode: 400, message: msg })
   }
   const { name, linkGlobal } = result.data
@@ -99,7 +86,7 @@ export default defineEventHandler(async (event) => {
       writeFileSync(linkPath, content, 'utf-8')
     }
 
-    updateAgentFile(agentId, name)
+    updateToolFile(agentId, name)
 
     return { id: name, name, symlink: !!linkGlobal }
   } catch (err: any) {

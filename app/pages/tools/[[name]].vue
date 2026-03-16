@@ -104,6 +104,60 @@ function openAddToolModal() {
   addToolError.value = ''
   addToolModalOpen.value = true
 }
+
+const removeModalOpen = ref(false)
+const toolToRemove = ref<ToolFile | null>(null)
+const removeDepsStatus = ref<'checking' | 'found' | 'safe'>('checking')
+const removeDeps = ref<{ agentId: string; toolName: string }[]>([])
+const removeLoading = ref(false)
+
+async function checkDeps(tool: ToolFile) {
+  removeDepsStatus.value = 'checking'
+  try {
+    const res = await $fetch<{ deps: { agentId: string; toolName: string }[] }>(`/api/tools/${tool.id}/deps`)
+    if (res.deps.length > 0) {
+      removeDeps.value = res.deps
+      removeDepsStatus.value = 'found'
+    } else {
+      removeDeps.value = []
+      removeDepsStatus.value = 'safe'
+    }
+  } catch (e: any) {
+    toast.add({ title: 'Dependency check failed', description: e.message, color: 'error' })
+    removeModalOpen.value = false
+  }
+}
+
+function openRemoveModal(tool: ToolFile) {
+  toolToRemove.value = tool
+  removeModalOpen.value = true
+  void checkDeps(tool)
+}
+
+function refreshDeps() {
+  if (toolToRemove.value) {
+    void checkDeps(toolToRemove.value)
+  }
+}
+
+async function confirmRemove() {
+  if (!toolToRemove.value || removeDepsStatus.value !== 'safe') return
+  removeLoading.value = true
+  try {
+    await $fetch(`/api/tools/${toolToRemove.value.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Tool deleted', description: `${toolToRemove.value.name}.ts removed`, color: 'success' })
+    await refreshTools()
+    if (selectedTool.value?.id === toolToRemove.value.id) {
+      void router.replace('/tools')
+      selectedTool.value = null
+    }
+    removeModalOpen.value = false
+  } catch (e: any) {
+    toast.add({ title: 'Delete failed', description: e.message, color: 'error' })
+  } finally {
+    removeLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -132,7 +186,7 @@ function openAddToolModal() {
         </div>
       </template>
     </UDashboardNavbar>
-    <ToolsList v-model="selectedTool" :tools="tools" />
+    <ToolsList v-model="selectedTool" :tools="tools" removable :on-remove="openRemoveModal" />
   </UDashboardPanel>
 
   <ToolsDetail v-if="selectedTool" :tool="selectedTool" @close="clearSelection" @saved="onToolSaved" />
@@ -166,6 +220,61 @@ function openAddToolModal() {
         <div class="flex justify-end gap-2">
           <UButton color="neutral" variant="ghost" label="Cancel" :disabled="addToolLoading" @click="addToolModalOpen = false" />
           <UButton icon="i-lucide-plus" label="Create" :loading="addToolLoading" @click="createTool" />
+        </div>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal v-model:open="removeModalOpen" :title="`Delete ${toolToRemove?.name}?`">
+    <template #body>
+      <div v-if="removeDepsStatus === 'checking'" class="flex items-center justify-center py-8">
+        <UIcon name="i-lucide-loader-2" class="size-6 animate-spin text-dimmed" />
+        <span class="ml-2 text-sm text-dimmed">Checking for agent dependencies...</span>
+      </div>
+
+      <div v-else-if="removeDepsStatus === 'found'" class="space-y-4 p-4 text-sm">
+        <div class="rounded-lg bg-warning/10 p-4 text-warning border border-warning/20 flex flex-col gap-2">
+          <div class="flex items-center gap-2 font-medium">
+            <UIcon name="i-lucide-alert-triangle" class="size-5 shrink-0" />
+            Cannot Delete Tool
+          </div>
+          <p>
+            This tool is currently linked to the following agent(s). You must unlink it from these agents before you can delete it globally.
+          </p>
+        </div>
+        
+        <ul class="space-y-2 border border-default rounded-lg divide-y divide-default">
+          <li v-for="dep in removeDeps" :key="dep.agentId" class="p-3 flex items-center justify-between">
+            <div>
+              <p class="font-medium text-highlighted">{{ dep.agentId }}</p>
+              <p class="text-xs text-dimmed">Linked as: {{ dep.toolName }}.ts</p>
+            </div>
+            <UButton
+              color="neutral"
+              variant="outline"
+              size="xs"
+              label="Open Agent"
+              icon="i-lucide-external-link"
+              :to="`/agents?id=${dep.agentId}`"
+              target="_blank"
+            />
+          </li>
+        </ul>
+
+        <div class="flex justify-between items-center pt-2">
+          <UButton color="neutral" variant="ghost" icon="i-lucide-refresh-cw" label="Refresh" @click="refreshDeps" />
+          <UButton color="neutral" variant="outline" label="Close" @click="removeModalOpen = false" />
+        </div>
+      </div>
+
+      <div v-else-if="removeDepsStatus === 'safe'" class="space-y-4 p-4">
+        <p class="text-sm">
+          Are you sure you want to permanently delete <span class="font-medium text-highlighted">{{ toolToRemove?.name }}.ts</span>?
+        </p>
+        <p class="text-xs text-dimmed">This file will be removed from disk. This action cannot be undone.</p>
+        <div class="flex justify-end gap-2 pt-2">
+          <UButton color="neutral" variant="ghost" label="Cancel" :disabled="removeLoading" @click="removeModalOpen = false" />
+          <UButton color="error" icon="i-lucide-trash-2" label="Delete" :loading="removeLoading" @click="confirmRemove" />
         </div>
       </div>
     </template>

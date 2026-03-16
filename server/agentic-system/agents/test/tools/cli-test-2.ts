@@ -1,0 +1,1 @@
+../../../tools/cli-test-2.ts

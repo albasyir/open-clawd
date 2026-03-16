@@ -36,7 +36,7 @@ const addToolLoading = ref(false)
 const toast = useToast()
 
 const globalTools = ref<ToolFile[]>([])
-const selectedGlobalToolId = ref<string | null>(null)
+const selectedGlobalToolId = ref<string>()
 const addGlobalToolLoading = ref(false)
 const addGlobalToolError = ref('')
 
@@ -89,7 +89,7 @@ async function linkGlobalTool() {
     const linked = tools.value?.find((t) => t.id === id)
     if (linked) selectedTool.value = linked
     addGlobalToolModalOpen.value = false
-    selectedGlobalToolId.value = null
+    selectedGlobalToolId.value = undefined
     toast.add({ title: 'Global tool linked', description: `${id}.ts (symlink)`, color: 'success' })
   } catch (e: any) {
     const msg = e?.data?.message ?? e?.message ?? 'Failed to link global tool'
@@ -108,7 +108,7 @@ function openAddToolModal() {
 
 async function openAddGlobalToolModal() {
   addGlobalToolError.value = ''
-  selectedGlobalToolId.value = null
+  selectedGlobalToolId.value = undefined
   addGlobalToolModalOpen.value = true
   try {
     const list = await $fetch<ToolFile[]>('/api/tools')
@@ -160,6 +160,58 @@ async function removeTool(tool: ToolFile) {
     toast.add({ title: 'Remove failed', description: msg, color: 'error' })
   }
 }
+
+const promoteModalOpen = ref(false)
+const promoteToolRef = ref<ToolFile | null>(null)
+const promoteGlobalName = ref('')
+const promoteLoading = ref(false)
+const promoteError = ref('')
+
+function openPromoteModal(tool: ToolFile) {
+  promoteToolRef.value = tool
+  promoteGlobalName.value = tool.name
+  promoteError.value = ''
+  promoteModalOpen.value = true
+}
+
+async function confirmPromote() {
+  const tool = promoteToolRef.value
+  if (!tool) return
+
+  const name = promoteGlobalName.value.trim().replace(/\s+/g, '-').toLowerCase()
+  if (!name) {
+    promoteError.value = 'Name is required'
+    return
+  }
+  if (!/^[a-z0-9_-]+$/i.test(name)) {
+    promoteError.value = 'Use only letters, numbers, hyphen or underscore'
+    return
+  }
+
+  promoteError.value = ''
+  promoteLoading.value = true
+  try {
+    await $fetch(`${toolsApiBase.value}/${tool.id}/promote`, {
+      method: 'POST',
+      body: { globalName: name }
+    })
+    await refreshTools()
+    const updated = tools.value?.find((t) => t.id === tool.id)
+    if (updated) selectedTool.value = updated
+    promoteModalOpen.value = false
+    toast.add({
+      title: 'Promoted to global',
+      description: `${name}.ts is now a global tool (auto-linked)`,
+      color: 'success'
+    })
+  } catch (e: any) {
+    const msg = e?.data?.message ?? e?.message ?? 'Failed to promote tool'
+    promoteError.value = msg
+    toast.add({ title: 'Promote failed', description: msg, color: 'error' })
+  } finally {
+    promoteLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -171,10 +223,14 @@ async function removeTool(tool: ToolFile) {
     }"
   >
     <template #content>
-      <div class="flex h-full flex-col min-h-0">
+      <div class="flex h-full flex-col min-h-0 bg-background">
         <div class="grid flex-1 min-h-0" style="grid-template-columns: minmax(0, 1fr) minmax(0, 2fr)">
           <div class="flex flex-col min-h-0 border-r border-default">
-            <div class="shrink-0 space-y-2 border-b border-default p-2">
+            <div class="shrink-0 space-y-2 border-b border-default p-4">
+              <div class="flex items-center justify-between">
+                <span class="font-semibold text-highlighted">Manage Tools</span>
+                <UButton icon="i-lucide-x" color="neutral" variant="ghost" class="-my-1.5 -mr-1.5" @click="open = false" />
+              </div>
               <p class="text-sm text-dimmed">Edit tool files for this agent.</p>
               <div class="flex gap-2">
                 <UButton
@@ -182,7 +238,7 @@ async function removeTool(tool: ToolFile) {
                   color="primary"
                   variant="outline"
                   size="sm"
-                  label="New tool"
+                  label="New for This Agent"
                   class="flex-1"
                   @click="openAddToolModal"
                 />
@@ -191,11 +247,21 @@ async function removeTool(tool: ToolFile) {
                   color="neutral"
                   variant="outline"
                   size="sm"
-                  label="Add global"
+                  label="Link Global Tool"
                   class="flex-1"
                   @click="openAddGlobalToolModal"
                 />
               </div>
+              <UButton
+                icon="i-lucide-external-link"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                label="Manage Global Tool"
+                to="/tools"
+                target="_blank"
+                block
+              />
             </div>
             <div class="flex-1 overflow-y-auto">
               <ToolsList
@@ -203,6 +269,7 @@ async function removeTool(tool: ToolFile) {
               :tools="tools ?? []"
               removable
               :on-remove="removeTool"
+              :on-promote="openPromoteModal"
             />
             </div>
           </div>
@@ -213,6 +280,7 @@ async function removeTool(tool: ToolFile) {
               :tools-api-base="toolsApiBase"
               @close="selectedTool = null"
               @saved="onToolSaved"
+              @copied="onToolSaved"
             />
             <div v-else class="flex flex-1 items-center justify-center p-6 text-dimmed text-sm">
               Select a tool to edit
@@ -266,6 +334,30 @@ async function removeTool(tool: ToolFile) {
         <div class="flex justify-end gap-2">
           <UButton color="neutral" variant="ghost" label="Cancel" :disabled="addGlobalToolLoading" @click="addGlobalToolModalOpen = false" />
           <UButton icon="i-lucide-link" label="Link" :loading="addGlobalToolLoading" :disabled="!selectedGlobalToolId" @click="linkGlobalTool" />
+        </div>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal v-model:open="promoteModalOpen" title="Promote to global">
+    <template #body>
+      <div class="space-y-4 p-4">
+        <p class="text-sm text-dimmed">This will copy the tool to the global tools directory and replace the local file with a symlink (auto-linked).</p>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium text-highlighted">Global tool name</label>
+          <UInput
+            v-model="promoteGlobalName"
+            placeholder="e.g. my-tool"
+            class="font-mono"
+            :disabled="promoteLoading"
+            @keydown.enter="confirmPromote"
+          />
+          <p class="mt-1 text-xs text-dimmed">Letters, numbers, hyphen or underscore only. Must be unique among global tools.</p>
+          <p v-if="promoteError" class="mt-1 text-sm text-error">{{ promoteError }}</p>
+        </div>
+        <div class="flex justify-end gap-2">
+          <UButton color="neutral" variant="ghost" label="Cancel" :disabled="promoteLoading" @click="promoteModalOpen = false" />
+          <UButton icon="i-lucide-arrow-up-from-line" label="Promote" :loading="promoteLoading" @click="confirmPromote" />
         </div>
       </div>
     </template>

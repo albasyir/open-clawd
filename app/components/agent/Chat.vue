@@ -136,6 +136,7 @@ function onSubmit() {
             :disabled="loading"
             class="w-full"
             :ui="{ base: 'p-0 resize-none' }"
+            @keydown.enter.exact.prevent="onSubmit"
           />
           <div class="flex justify-end gap-2 mt-2">
             <UButton
@@ -215,6 +216,7 @@ function onSubmit() {
             :disabled="loading"
             class="w-full"
             :ui="{ base: 'p-0 resize-none' }"
+            @keydown.enter.exact.prevent="onSubmit"
           />
           <div class="mt-2 flex justify-end gap-2">
             <UButton type="submit" color="primary" :loading="loading" label="Send" icon="i-lucide-send" />

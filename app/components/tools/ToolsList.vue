@@ -8,6 +8,8 @@ const props = withDefaults(
     removable?: boolean
     /** Called when user clicks remove; only used when removable is true. */
     onRemove?: (tool: ToolFile) => void
+    /** Called when user clicks promote; only shown for non-symlink tools. */
+    onPromote?: (tool: ToolFile) => void
   }>(),
   { removable: false }
 )
@@ -51,16 +53,26 @@ watch(selectedTool, () => {
             <span v-if="tool.symlink" class="ml-1">(symlink)</span>
           </p>
         </div>
-        <UButton
-          v-if="removable && onRemove"
-          :icon="tool.symlink ? 'i-lucide-unlink' : 'i-lucide-trash-2'"
-          color="neutral"
-          variant="ghost"
-          size="xs"
-          :title="tool.symlink ? 'Unlink from agent' : 'Delete tool'"
-          class="shrink-0 -me-1"
-          @click.stop="onRemove(tool)"
-        />
+        <UTooltip v-if="onPromote && !tool.symlink" text="Promote to global">
+          <UButton
+            icon="i-lucide-arrow-up-from-line"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            class="shrink-0"
+            @click.stop="onPromote(tool)"
+          />
+        </UTooltip>
+        <UTooltip v-if="removable && onRemove" :text="tool.symlink ? 'Unlink from agent' : 'Delete tool'">
+          <UButton
+            :icon="tool.symlink ? 'i-lucide-unlink' : 'i-lucide-trash-2'"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            class="shrink-0 -me-1"
+            @click.stop="onRemove(tool)"
+          />
+        </UTooltip>
       </div>
     </div>
   </div>

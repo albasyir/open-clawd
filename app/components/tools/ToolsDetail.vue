@@ -16,11 +16,13 @@ const isSymlink = computed(() => !!props.tool.symlink)
 const emits = defineEmits<{
   close: []
   saved: []
+  copied: []
 }>()
 
 const toast = useToast()
 const code = ref(props.tool.content ?? '')
 const saving = ref(false)
+const copying = ref(false)
 const testModalOpen = ref(false)
 const testInput = ref('')
 const testResult = ref<{ success: boolean; result?: unknown; error?: string } | null>(null)
@@ -131,6 +133,26 @@ defineShortcuts({
   }
 })
 
+async function copyToLocal() {
+  if (copying.value) return
+  copying.value = true
+  try {
+    await $fetch(`${toolsBase.value}/${props.tool.id}/copy`, { method: 'POST' })
+    toast.add({
+      title: 'Copied',
+      description: `${props.tool.name}.ts is now a local editable copy.`,
+      icon: 'i-lucide-check',
+      color: 'success'
+    })
+    emits('copied')
+  } catch (e: any) {
+    const msg = e?.data?.message ?? e?.message ?? 'Failed to copy tool'
+    toast.add({ title: 'Copy failed', description: msg, color: 'error' })
+  } finally {
+    copying.value = false
+  }
+}
+
 const editorOptions = computed(() => ({
   automaticLayout: true,
   formatOnType: true,
@@ -184,8 +206,10 @@ const editorOptions = computed(() => ({
           <UButton
             color="neutral"
             variant="outline"
+            icon="i-lucide-copy"
             label="Copy tool for this agent"
-            disabled
+            :loading="copying"
+            @click="copyToLocal"
           />
           <UButton
             color="primary"
