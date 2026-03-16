@@ -9,12 +9,12 @@ const tabItems = [
 ]
 const selectedTab = ref('all')
 
-const { data: chatsData } = await useFetch<AgentConversation[]>('/api/agents/chats', { default: () => [] })
+const { data: chatsData, refresh: refreshChats } = await useFetch<AgentConversation[]>('/api/agents/chats', { default: () => [] })
 
 /** Threads: one per agent from API, plus new threads from "New chat". Keyed by thread id so each chat has its own messages. */
 const threads = ref<AgentConversation[]>([])
 watch(chatsData, (data) => {
-  if (data?.length && threads.value.length === 0) {
+  if (data?.length) {
     threads.value = [...data]
   }
 }, { immediate: true })
@@ -126,6 +126,27 @@ async function onSend(message: string) {
 
 const breakpoints = useBreakpoints(breakpointsTailwind)
 const isMobile = breakpoints.smaller('lg')
+
+const addAgentModalOpen = ref(false)
+
+async function onAgentCreated(newAgentId: string) {
+  await refreshChats()
+  const newConversation = threads.value.find(c => c.id === newAgentId)
+  if (newConversation) {
+    selectedConversationId.value = newConversation.id
+    // Small delay to let chat component mount
+    setTimeout(() => {
+      openAgentSystemEditor(newAgentId)
+    }, 100)
+  }
+}
+
+const chatPanelRef = ref()
+function openAgentSystemEditor(agentId: string) {
+  if (chatPanelRef.value?.openAgentFiles) {
+    chatPanelRef.value.openAgentFiles('identity.ts')
+  }
+}
 </script>
 
 <template>
@@ -145,6 +166,14 @@ const isMobile = breakpoints.smaller('lg')
       </template>
 
       <template #right>
+        <UButton
+          icon="i-lucide-plus"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          class="me-2"
+          @click="addAgentModalOpen = true"
+        />
         <UTabs
           v-model="selectedTab"
           :items="tabItems"
@@ -160,6 +189,7 @@ const isMobile = breakpoints.smaller('lg')
     <AgentChat
       v-if="displayConversation"
       :key="displayConversation.id"
+      ref="chatPanelRef"
       embedded
       :conversation="displayConversation"
       :send-loading="sendLoading"
@@ -188,6 +218,8 @@ const isMobile = breakpoints.smaller('lg')
       </template>
     </USlideover>
   </ClientOnly>
+
+  <AgentAddAgentModal v-model:open="addAgentModalOpen" @created="onAgentCreated" />
 </template>
 
 <style scoped>

@@ -9,7 +9,7 @@ export default defineEventHandler((event): ToolFile[] => {
   }
 
   const agentDir = join(process.cwd(), 'server', 'agentic-system', 'agents', agentId)
-  const allowedFiles = ['agent.ts', 'memory.ts', 'model.ts', 'soul.md']
+  const allowedFiles = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
 
   return allowedFiles.map((file) => {
     const filePath = join(agentDir, file)

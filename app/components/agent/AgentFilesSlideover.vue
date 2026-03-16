@@ -5,6 +5,7 @@ const props = defineProps<{
   agentId: string
   agentName: string
   open: boolean
+  initialFileId?: string
 }>()
 
 const emit = defineEmits<{
@@ -37,6 +38,22 @@ watch(
 )
 
 const selectedFile = ref<ToolFile | null>(null)
+
+watch(
+  () => [props.open, agentFiles.value, props.initialFileId] as const,
+  ([isOpen, files, initId]) => {
+    if (isOpen && files.length > 0 && initId) {
+      const target = files.find(f => f.id === initId)
+      if (target) {
+        selectedFile.value = target
+        // Clear initialFileId so it doesn't force re-selection if user clicks another file
+        // However, we receive it as prop so we just rely on watch not overriding user clicks
+        // unless open toggles or files reload
+      }
+    }
+  },
+  { immediate: true }
+)
 
 async function onFileSaved() {
   await refreshFiles()
@@ -92,6 +109,7 @@ watch(open, (isOpen) => {
               v-if="selectedFile"
               :tool="selectedFile"
               :tools-api-base="filesApiBase"
+              :hide-test="true"
               @close="selectedFile = null"
               @saved="onFileSaved"
               @copied="onFileSaved"

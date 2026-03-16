@@ -6,7 +6,7 @@ const putFileBodySchema = z.object({
   content: z.string()
 })
 
-const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'soul.md']
+const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
 
 export default defineEventHandler(async (event) => {
   const agentId = getRouterParam(event, 'id')

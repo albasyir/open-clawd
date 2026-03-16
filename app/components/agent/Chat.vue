@@ -38,6 +38,17 @@ function onSubmit() {
     localSending.value = false
   }, 500)
 }
+
+const filesSlideoverInitialFile = ref<string>()
+
+function openAgentFiles(fileId?: string) {
+  filesSlideoverInitialFile.value = fileId
+  filesSlideoverOpen.value = true
+}
+
+defineExpose({
+  openAgentFiles
+})
 </script>
 
 <template>
@@ -289,6 +300,7 @@ function onSubmit() {
     v-model:open="filesSlideoverOpen"
     :agent-id="conversation.id"
     :agent-name="conversation.agent.name"
+    :initial-file-id="filesSlideoverInitialFile"
   />
 
   <AgentToolsSlideover

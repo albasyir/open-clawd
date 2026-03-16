@@ -6,6 +6,8 @@ const props = withDefaults(
     tool: ToolFile
     /** When set, use this base for save/test (e.g. /api/agents/test). Omit for global /api/tools. */
     toolsApiBase?: string
+    /** Whether to hide the 'Save and Test' button and test functionality */
+    hideTest?: boolean
   }>(),
   { toolsApiBase: '' }
 )
@@ -182,7 +184,7 @@ const displayFilename = computed(() => props.tool.id.includes('.') ? props.tool.
       </template>
       <template #right>
         <UButton
-          v-if="!isSymlink"
+          v-if="!isSymlink && !hideTest"
           icon="i-lucide-play"
           color="neutral"
           variant="outline"
