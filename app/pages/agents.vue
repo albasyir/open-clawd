@@ -55,20 +55,6 @@ watch(filteredConversations, () => {
   }
 })
 
-function startNewChat() {
-  const c = selectedConversation.value
-  if (!c) return
-  const newThread: AgentConversation = {
-    id: crypto.randomUUID(),
-    agentId: c.agentId,
-    agent: c.agent,
-    messages: [],
-    updatedAt: new Date().toISOString()
-  }
-  threads.value = [...threads.value, newThread]
-  selectedConversationId.value = newThread.id
-}
-
 const toast = useToast()
 const sendLoading = ref(false)
 
@@ -194,7 +180,6 @@ function openAgentSystemEditor(agentId: string) {
       :conversation="displayConversation"
       :send-loading="sendLoading"
       @close="selectedConversationId = null"
-      @new-chat="startNewChat"
       @send="onSend"
     />
     <div v-else class="flex flex-1 flex-col items-center justify-center min-h-0 p-6">
@@ -212,7 +197,6 @@ function openAgentSystemEditor(agentId: string) {
           :conversation="displayConversation"
           :send-loading="sendLoading"
           @close="selectedConversationId = null"
-          @new-chat="startNewChat"
           @send="onSend"
         />
       </template>

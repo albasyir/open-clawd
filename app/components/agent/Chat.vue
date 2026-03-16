@@ -69,14 +69,6 @@ defineExpose({
         />
       </template>
       <template #right>
-        <UTooltip text="New chat">
-          <UButton
-            icon="i-lucide-plus"
-            color="neutral"
-            variant="ghost"
-            @click="emit('newChat')"
-          />
-        </UTooltip>
         <UTooltip text="Manage Agent System">
           <UButton
             icon="i-lucide-code"
@@ -196,14 +188,6 @@ defineExpose({
         />
       </template>
       <template #right>
-        <UTooltip text="New chat">
-          <UButton
-            icon="i-lucide-plus"
-            color="neutral"
-            variant="ghost"
-            @click="emit('newChat')"
-          />
-        </UTooltip>
         <UTooltip text="Manage Agent System">
           <UButton
             icon="i-lucide-code"
