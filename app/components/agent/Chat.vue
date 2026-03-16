@@ -21,6 +21,7 @@ const emit = defineEmits<{
 
 const message = ref('')
 const localSending = ref(false)
+const filesSlideoverOpen = ref(false)
 const toolsSlideoverOpen = ref(false)
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
@@ -40,7 +41,12 @@ function onSubmit() {
 </script>
 
 <template>
-  <UDashboardPanel v-if="!embedded" id="agents-2" :default-size="75" :min-size="50">
+  <UDashboardPanel
+    v-if="!embedded"
+    id="agents-2"
+    :default-size="75"
+    :min-size="50"
+  >
     <UDashboardNavbar :title="conversation.agent.name" :toggle="false">
       <template #leading>
         <UButton
@@ -53,7 +59,20 @@ function onSubmit() {
       </template>
       <template #right>
         <UTooltip text="New chat">
-          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="emit('newChat')" />
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="ghost"
+            @click="emit('newChat')"
+          />
+        </UTooltip>
+        <UTooltip text="Manage Agent System">
+          <UButton
+            icon="i-lucide-code"
+            color="neutral"
+            variant="ghost"
+            @click="filesSlideoverOpen = true"
+          />
         </UTooltip>
         <UTooltip text="Manage tools">
           <UButton
@@ -108,7 +127,9 @@ function onSubmit() {
             ? 'bg-primary text-primary-foreground rounded-tr-sm'
             : 'bg-elevated rounded-tl-sm'"
         >
-          <p class="whitespace-pre-wrap text-sm">{{ msg.content }}</p>
+          <p class="whitespace-pre-wrap text-sm">
+            {{ msg.content }}
+          </p>
           <p
             class="text-xs mt-1"
             :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'"
@@ -155,20 +176,50 @@ function onSubmit() {
   <div v-else class="flex h-full w-full min-h-0 min-w-0 flex-col">
     <UDashboardNavbar :title="conversation.agent.name" :toggle="false">
       <template #leading>
-        <UButton icon="i-lucide-x" color="neutral" variant="ghost" class="-ms-1.5" @click="emit('close')" />
+        <UButton
+          icon="i-lucide-x"
+          color="neutral"
+          variant="ghost"
+          class="-ms-1.5"
+          @click="emit('close')"
+        />
       </template>
       <template #right>
-        <UTooltip text="New chat"><UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="emit('newChat')" /></UTooltip>
+        <UTooltip text="New chat">
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="ghost"
+            @click="emit('newChat')"
+          />
+        </UTooltip>
+        <UTooltip text="Manage Agent System">
+          <UButton
+            icon="i-lucide-code"
+            color="neutral"
+            variant="ghost"
+            @click="filesSlideoverOpen = true"
+          />
+        </UTooltip>
         <UTooltip text="Manage tools">
-          <UButton icon="i-lucide-wrench" color="neutral" variant="ghost" @click="toolsSlideoverOpen = true" />
+          <UButton
+            icon="i-lucide-wrench"
+            color="neutral"
+            variant="ghost"
+            @click="toolsSlideoverOpen = true"
+          />
         </UTooltip>
       </template>
     </UDashboardNavbar>
     <div class="flex items-center gap-4 border-b border-default shrink-0 p-4 sm:px-6">
       <UAvatar v-bind="conversation.agent.avatar" :alt="conversation.agent.name" size="xl" />
       <div class="min-w-0">
-        <p class="font-semibold text-highlighted">{{ conversation.agent.name }}</p>
-        <p class="text-muted text-sm">Agent · Chat</p>
+        <p class="font-semibold text-highlighted">
+          {{ conversation.agent.name }}
+        </p>
+        <p class="text-muted text-sm">
+          Agent · Chat
+        </p>
       </div>
     </div>
     <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-4">
@@ -192,7 +243,9 @@ function onSubmit() {
           class="max-w-[85%] rounded-2xl px-4 py-2.5"
           :class="msg.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-elevated'"
         >
-          <p class="whitespace-pre-wrap text-sm">{{ msg.content }}</p>
+          <p class="whitespace-pre-wrap text-sm">
+            {{ msg.content }}
+          </p>
           <p class="mt-1 text-xs" :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'">
             {{ format(new Date(msg.date), 'HH:mm') }}
           </p>
@@ -219,12 +272,24 @@ function onSubmit() {
             @keydown.enter.exact.prevent="onSubmit"
           />
           <div class="mt-2 flex justify-end gap-2">
-            <UButton type="submit" color="primary" :loading="loading" label="Send" icon="i-lucide-send" />
+            <UButton
+              type="submit"
+              color="primary"
+              :loading="loading"
+              label="Send"
+              icon="i-lucide-send"
+            />
           </div>
         </form>
       </UCard>
     </div>
   </div>
+
+  <AgentFilesSlideover
+    v-model:open="filesSlideoverOpen"
+    :agent-id="conversation.id"
+    :agent-name="conversation.agent.name"
+  />
 
   <AgentToolsSlideover
     v-model:open="toolsSlideoverOpen"
