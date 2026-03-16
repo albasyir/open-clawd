@@ -1,4 +1,3 @@
-import { agents } from '../../../agentic-system/agents/registry'
 
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content
@@ -19,9 +18,17 @@ export default eventHandler(async (event) => {
     throw createError({ statusCode: 400, message: 'Invalid agent id' })
   }
 
-  const agent = agents[id]
-  if (!agent?.invoke) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let agent: any
+  try {
+    const agentModule = await import(`../../../agentic-system/agents/${id}/agent.ts`)
+    agent = agentModule.default
+  } catch {
     throw createError({ statusCode: 404, message: `Agent "${id}" not found` })
+  }
+
+  if (!agent?.invoke) {
+    throw createError({ statusCode: 404, message: `Agent "${id}" is invalid or has no invoke method` })
   }
 
   const body = await readBody<{ thread_id: string; message: string }>(event)
