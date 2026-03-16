@@ -1,6 +1,9 @@
 import { OpenAI } from "@langchain/openai";
+import identity from "./identity";
+
+
 
 export default new OpenAI({
-    model: 'gpt-5.3-codex',
-    apiKey: process.env.OPENAI_API_KEY,
+    model: identity.model || 'gpt-5',
+    apiKey: identity.apiKey,
 })

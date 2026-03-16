@@ -1,3 +1,5 @@
 export default {
-    name: 'default'
+    name: 'default',
+    model: 'gpt-5',
+    apiKey: '',
 }
