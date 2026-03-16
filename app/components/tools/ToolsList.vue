@@ -56,7 +56,7 @@ watch(selectedTool, () => {
             />
           </div>
           <p class="mt-0.5 text-dimmed text-xs">
-            {{ tool.id }}.ts
+            {{ tool.id.includes('.') ? tool.id : `${tool.id}.ts` }}
             <span v-if="tool.symlink" class="ml-1">(symlink)</span>
           </p>
         </div>

@@ -9,17 +9,24 @@ export default defineEventHandler((event): ToolFile[] => {
   }
 
   const agentDir = join(process.cwd(), 'server', 'agentic-system', 'agents', agentId)
-  const allowedFiles = ['agent.ts', 'memory.ts', 'model.ts']
+  const allowedFiles = ['agent.ts', 'memory.ts', 'model.ts', 'soul.md']
 
   return allowedFiles.map((file) => {
     const filePath = join(agentDir, file)
-    const name = file.replace(/\.ts$/, '')
+    let name = file
+    if (name.endsWith('.ts')) name = name.slice(0, -3)
+    if (name.endsWith('.md')) name = name.slice(0, -3)
+
     let content: string | undefined
     try {
       content = readFileSync(filePath, 'utf-8')
     } catch {
-      content = undefined
+      if (file === 'soul.md') {
+        content = 'Now you are agent for user, soon or leter you become someone'
+      } else {
+        content = undefined
+      }
     }
-    return { id: name, name, content, symlink: false }
+    return { id: file, name, content, symlink: false }
   }).filter(f => f.content !== undefined) // Only return files that exist
 })

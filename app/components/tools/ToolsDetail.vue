@@ -25,13 +25,13 @@ const saving = ref(false)
 const copying = ref(false)
 const testModalOpen = ref(false)
 const testInput = ref('')
-const testResult = ref<{ success: boolean; result?: unknown; error?: string } | null>(null)
+const testResult = ref<{ success: boolean, result?: unknown, error?: string } | null>(null)
 const testing = ref(false)
 
 const sampleInputs: Record<string, string> = {
-  math: JSON.stringify({ a: 1, b: 2, operation: 'add' }, null, 2),
+  'math': JSON.stringify({ a: 1, b: 2, operation: 'add' }, null, 2),
   'get-weather': JSON.stringify({ city: 'London' }, null, 2),
-  cli: JSON.stringify({ command: 'echo hello' }, null, 2)
+  'cli': JSON.stringify({ command: 'echo hello' }, null, 2)
 }
 
 watch(
@@ -74,7 +74,7 @@ async function runTest() {
   testing.value = true
   testResult.value = null
   try {
-    const res = await $fetch<{ success: boolean; result?: unknown; error?: string }>(
+    const res = await $fetch<{ success: boolean, result?: unknown, error?: string }>(
       `${toolsBase.value}/${props.tool.id}/test`,
       { method: 'POST', body: { input: inputObj } }
     )
@@ -103,7 +103,7 @@ async function save(): Promise<boolean> {
     })
     toast.add({
       title: 'Saved',
-      description: `${props.tool.name}.ts has been saved.`,
+      description: `${displayFilename.value} has been saved.`,
       icon: 'i-lucide-check',
       color: 'success'
     })
@@ -140,7 +140,7 @@ async function copyToLocal() {
     await $fetch(`${toolsBase.value}/${props.tool.id}/copy`, { method: 'POST' })
     toast.add({
       title: 'Copied',
-      description: `${props.tool.name}.ts is now a local editable copy.`,
+      description: `${displayFilename.value} is now a local editable copy.`,
       icon: 'i-lucide-check',
       color: 'success'
     })
@@ -163,6 +163,9 @@ const editorOptions = computed(() => ({
   wordWrap: 'on' as const,
   readOnly: isSymlink.value
 }))
+
+const editorLanguage = computed(() => props.tool.id.endsWith('.md') ? 'markdown' : 'typescript')
+const displayFilename = computed(() => props.tool.id.includes('.') ? props.tool.id : `${props.tool.id}.ts`)
 </script>
 
 <template>
@@ -227,7 +230,7 @@ const editorOptions = computed(() => ({
         <div class="flex-1 min-h-[400px] rounded-lg overflow-hidden border border-default">
           <vue-monaco-editor
             v-model:value="code"
-            language="typescript"
+            :language="editorLanguage"
             theme="vs-dark"
             :options="editorOptions"
             class="h-full min-h-[400px]"
@@ -252,7 +255,7 @@ const editorOptions = computed(() => ({
               v-model="testInput"
               :rows="8"
               class="font-mono text-sm"
-              placeholder='e.g. { "a": 1, "b": 2, "operation": "add" }'
+              placeholder="e.g. { &quot;a&quot;: 1, &quot;b&quot;: 2, &quot;operation&quot;: &quot;add&quot; }"
             />
           </div>
           <div v-if="testResult" class="rounded-lg p-3 text-sm" :class="testResult.success ? 'bg-success/10 text-success' : 'bg-error/10 text-error'">
@@ -260,8 +263,18 @@ const editorOptions = computed(() => ({
             <pre class="mt-1 whitespace-pre-wrap break-words">{{ testResult.success ? JSON.stringify(testResult.result, null, 2) : testResult.error }}</pre>
           </div>
           <div class="flex justify-end gap-2">
-            <UButton color="neutral" variant="ghost" label="Close" @click="testModalOpen = false" />
-            <UButton icon="i-lucide-play" :loading="testing" label="Run test" @click="runTest" />
+            <UButton
+              color="neutral"
+              variant="ghost"
+              label="Close"
+              @click="testModalOpen = false"
+            />
+            <UButton
+              icon="i-lucide-play"
+              :loading="testing"
+              label="Run test"
+              @click="runTest"
+            />
           </div>
         </div>
       </template>

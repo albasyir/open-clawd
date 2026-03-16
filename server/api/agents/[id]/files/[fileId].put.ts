@@ -6,7 +6,7 @@ const putFileBodySchema = z.object({
   content: z.string()
 })
 
-const ALLOWED_FILES = ['agent', 'memory', 'model']
+const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'soul.md']
 
 export default defineEventHandler(async (event) => {
   const agentId = getRouterParam(event, 'id')
@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
   }
   const body = result.data
 
-  const filePath = join(process.cwd(), 'server', 'agentic-system', 'agents', agentId, `${fileId}.ts`)
+  const filePath = join(process.cwd(), 'server', 'agentic-system', 'agents', agentId, fileId)
 
   try {
     writeFileSync(filePath, body.content, 'utf-8')
