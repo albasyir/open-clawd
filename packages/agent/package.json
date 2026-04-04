@@ -1,0 +1,14 @@
+{
+  "name": "clawpro-agent",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@langchain/langgraph": "^1.2.2",
+    "@langchain/openai": "^1.2.12",
+    "langchain": "^1.2.30"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
