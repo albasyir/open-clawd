@@ -1,10 +1,6 @@
-import { lstatSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { z } from 'zod'
 
-const putToolBodySchema = z.object({
-  content: z.string()
-})
+const putToolBodySchema = z.object({ content: z.string() })
 
 export default defineEventHandler(async (event) => {
   const agentId = getRouterParam(event, 'id')
@@ -21,21 +17,11 @@ export default defineEventHandler(async (event) => {
   if (!result.success) {
     throw createError({ statusCode: 400, message: result.error.message })
   }
-  const body = result.data
-
-  const filePath = join(AGENT_DIR, 'agents', agentId, 'tools', `${toolId}.ts`)
 
   try {
-    const stat = lstatSync(filePath, { throwIfNoEntry: false })
-    if (stat?.isSymbolicLink()) {
-      throw createError({ statusCode: 400, message: 'Cannot edit a symlinked tool' })
-    }
-    writeFileSync(filePath, body.content, 'utf-8')
+    toolManager.updateForAgent(agentId, toolId, result.data.content)
     return { ok: true }
   } catch (err) {
-    throw createError({
-      statusCode: 500,
-      message: err instanceof Error ? err.message : 'Failed to save file'
-    })
+    throwAgentError(err)
   }
 })

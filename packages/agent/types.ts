@@ -1,0 +1,46 @@
+export class AgentError extends Error {
+  statusCode: number
+  constructor(statusCode: number, message: string) {
+    super(message)
+    this.statusCode = statusCode
+  }
+}
+
+export interface ToolInfo {
+  id: string
+  name: string
+  content?: string
+  symlink?: boolean
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+  content?: string
+}
+
+export interface AgentFileInfo {
+  id: string
+  name: string
+  content?: string
+  symlink: boolean
+}
+
+export interface AgentInfo {
+  id: string
+  agentId: string
+  agent: { name: string; avatar?: { src: string } }
+  messages: unknown[]
+  updatedAt: string
+}
+
+export interface TemplateInfo {
+  id: string
+  name: string
+}
+
+export interface TestResult {
+  success: boolean
+  result?: unknown
+  error?: string
+}

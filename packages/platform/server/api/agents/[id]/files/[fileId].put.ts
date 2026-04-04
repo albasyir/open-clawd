@@ -1,12 +1,6 @@
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { z } from 'zod'
 
-const putFileBodySchema = z.object({
-  content: z.string()
-})
-
-const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
+const putFileBodySchema = z.object({ content: z.string() })
 
 export default defineEventHandler(async (event) => {
   const agentId = getRouterParam(event, 'id')
@@ -14,7 +8,7 @@ export default defineEventHandler(async (event) => {
   if (!agentId || !/^[a-z0-9_-]+$/i.test(agentId)) {
     throw createError({ statusCode: 400, message: 'Invalid agent id' })
   }
-  if (!fileId || !ALLOWED_FILES.includes(fileId)) {
+  if (!fileId) {
     throw createError({ statusCode: 400, message: 'Invalid file id' })
   }
 
@@ -23,17 +17,11 @@ export default defineEventHandler(async (event) => {
   if (!result.success) {
     throw createError({ statusCode: 400, message: result.error.message })
   }
-  const body = result.data
-
-  const filePath = join(AGENT_DIR, 'agents', agentId, fileId)
 
   try {
-    writeFileSync(filePath, body.content, 'utf-8')
+    agentManager.updateAgentFile(agentId, fileId, result.data.content)
     return { ok: true }
   } catch (err) {
-    throw createError({
-      statusCode: 500,
-      message: err instanceof Error ? err.message : 'Failed to save file'
-    })
+    throwAgentError(err)
   }
 })
