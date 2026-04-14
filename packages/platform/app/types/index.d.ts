@@ -75,11 +75,22 @@ export interface ModelFile {
 
 export type ChatMessageRole = 'user' | 'agent'
 
+export interface ChatTimelineItem {
+  value: string
+  slot: string
+  date: string
+  title: string
+  description: string
+  icon?: string
+}
+
 export interface ChatMessage {
   id: string
   role: ChatMessageRole
   content: string
   date: string
+  timeline?: ChatTimelineItem[]
+  streamState?: 'working' | 'done' | 'error'
 }
 
 export interface AgentConversation {

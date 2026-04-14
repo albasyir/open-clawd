@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { format } from 'date-fns'
-import type { AgentConversation } from '~/types'
+import type { AgentConversation, ChatMessage } from '~/types'
 
 const props = withDefaults(
   defineProps<{
@@ -24,8 +24,46 @@ const message = ref('')
 const localSending = ref(false)
 const filesSlideoverOpen = ref(false)
 const toolsSlideoverOpen = ref(false)
+const timelineSelections = ref<Record<string, string | number | undefined>>({})
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
+
+function setTimelineSelection(messageId: string, value: string | number | undefined) {
+  timelineSelections.value = {
+    ...timelineSelections.value,
+    [messageId]: value
+  }
+}
+
+function onTimelineSelect(messageId: string, value: string | number | undefined) {
+  const currentValue = timelineSelections.value[messageId]
+  setTimelineSelection(messageId, currentValue === value ? undefined : value)
+}
+
+function isTimelineSelected(messageId: string, value: string | number | undefined) {
+  return timelineSelections.value[messageId] === value
+}
+
+function formatTimelineDate(date: string) {
+  return format(new Date(date), 'HH:mm:ss')
+}
+
+function shouldShowWorkingState(message: ChatMessage) {
+  return message.role === 'agent'
+    && message.streamState === 'working'
+    && !message.content.trim()
+    && !(message.timeline?.length)
+}
+
+function hasTimeline(message: ChatMessage) {
+  return message.role === 'agent' && !!message.timeline?.length
+}
+
+function shouldRenderBubble(message: ChatMessage) {
+  if (message.role === 'user') return true
+
+  return !!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message)
+}
 
 function onSubmit() {
   const text = message.value.trim()
@@ -134,20 +172,61 @@ defineExpose({
           <UIcon name="i-lucide-user" class="size-4 text-primary" />
         </div>
         <div
-          class="max-w-[85%] rounded-2xl px-4 py-2.5"
-          :class="msg.role === 'user'
-            ? 'bg-primary text-primary-foreground rounded-tr-sm'
-            : 'bg-elevated rounded-tl-sm'"
+          class="max-w-[85%] min-w-0"
         >
-          <p class="whitespace-pre-wrap text-sm">
-            {{ msg.content }}
-          </p>
-          <p
-            class="text-xs mt-1"
-            :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'"
+          <div
+            v-if="hasTimeline(msg)"
+            class="mb-2 rounded-xl border border-default bg-default/40 px-4 py-3"
           >
-            {{ format(new Date(msg.date), 'HH:mm') }}
-          </p>
+            <UTimeline
+              :items="msg.timeline || []"
+              size="xs"
+              color="neutral"
+              :model-value="timelineSelections[msg.id]"
+              @select="(_, item) => onTimelineSelect(msg.id, item.value)"
+            >
+              <template
+                v-for="item in (msg.timeline || [])"
+                :key="`${msg.id}-${item.value}-date`"
+                #[`${item.slot}-date`]
+              >
+                <span class="text-[11px] text-dimmed">
+                  {{ formatTimelineDate(item.date) }}
+                </span>
+              </template>
+              <template
+                v-for="item in (msg.timeline || [])"
+                :key="`${msg.id}-${item.value}-description`"
+                #[`${item.slot}-description`]
+              >
+                <div v-if="isTimelineSelected(msg.id, item.value)" class="rounded-md bg-default/50 p-2">
+                  <p class="whitespace-pre-wrap text-xs text-toned">
+                    {{ item.description }}
+                  </p>
+                </div>
+              </template>
+            </UTimeline>
+          </div>
+          <div
+            v-if="shouldRenderBubble(msg)"
+            class="rounded-2xl px-4 py-2.5"
+            :class="msg.role === 'user'
+              ? 'bg-primary text-primary-foreground rounded-tr-sm'
+              : 'bg-elevated rounded-tl-sm'"
+          >
+            <p v-if="msg.content" class="whitespace-pre-wrap text-sm">
+              {{ msg.content }}
+            </p>
+            <p v-else-if="shouldShowWorkingState(msg)" class="text-sm text-dimmed">
+              Working...
+            </p>
+            <p
+              class="text-xs mt-1"
+              :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'"
+            >
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -251,16 +330,55 @@ defineExpose({
         <div v-else class="bg-primary/20 flex size-9 shrink-0 items-center justify-center rounded-full">
           <UIcon name="i-lucide-user" class="size-4 text-primary" />
         </div>
-        <div
-          class="max-w-[85%] rounded-2xl px-4 py-2.5"
-          :class="msg.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-elevated'"
-        >
-          <p class="whitespace-pre-wrap text-sm">
-            {{ msg.content }}
-          </p>
-          <p class="mt-1 text-xs" :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'">
-            {{ format(new Date(msg.date), 'HH:mm') }}
-          </p>
+        <div class="max-w-[85%] min-w-0">
+          <div
+            v-if="hasTimeline(msg)"
+            class="mb-2 rounded-xl border border-default bg-default/40 px-4 py-3"
+          >
+            <UTimeline
+              :items="msg.timeline || []"
+              size="xs"
+              color="neutral"
+              :model-value="timelineSelections[msg.id]"
+              @select="(_, item) => onTimelineSelect(msg.id, item.value)"
+            >
+              <template
+                v-for="item in (msg.timeline || [])"
+                :key="`${msg.id}-${item.value}-mobile-date`"
+                #[`${item.slot}-date`]
+              >
+                <span class="text-[11px] text-dimmed">
+                  {{ formatTimelineDate(item.date) }}
+                </span>
+              </template>
+              <template
+                v-for="item in (msg.timeline || [])"
+                :key="`${msg.id}-${item.value}-mobile-description`"
+                #[`${item.slot}-description`]
+              >
+                <div v-if="isTimelineSelected(msg.id, item.value)" class="rounded-md bg-default/50 p-2">
+                  <p class="whitespace-pre-wrap text-xs text-toned">
+                    {{ item.description }}
+                  </p>
+                </div>
+              </template>
+            </UTimeline>
+          </div>
+          <div
+            v-if="shouldRenderBubble(msg)"
+            class="rounded-2xl px-4 py-2.5"
+            :class="msg.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-elevated'"
+          >
+            <p v-if="msg.content" class="whitespace-pre-wrap text-sm">
+              {{ msg.content }}
+            </p>
+            <p v-else-if="shouldShowWorkingState(msg)" class="text-sm text-dimmed">
+              Working...
+            </p>
+            <p class="mt-1 text-xs" :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'">
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
+          </div>
         </div>
       </div>
     </div>

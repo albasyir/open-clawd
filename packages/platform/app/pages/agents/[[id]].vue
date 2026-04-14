@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { breakpointsTailwind } from '@vueuse/core'
-import type { AgentConversation, ChatMessage } from '~/types'
+import type { AgentConversation, ChatMessage, ChatTimelineItem } from '~/types'
 
 type ChatToolStreamEvent = {
   event: 'on_tool_start' | 'on_tool_event' | 'on_tool_end' | 'on_tool_error'
@@ -125,55 +125,9 @@ function formatStreamData(data: unknown): string {
   }
 }
 
-function formatToolStreamEvent(event: ChatToolStreamEvent): string {
-  if (event.event === 'on_tool_start') {
-    const details = event.input == null ? '' : `\n${formatStreamData(event.input)}`
-    return `[tool:start] ${event.name}${details}`
-  }
-
-  if (event.event === 'on_tool_event') {
-    const details = event.data == null ? '' : `\n${formatStreamData(event.data)}`
-    return `[tool:progress] ${event.name}${details}`
-  }
-
-  if (event.event === 'on_tool_end') {
-    const details = event.output == null ? '' : `\n${formatStreamData(event.output)}`
-    return `[tool:end] ${event.name}${details}`
-  }
-
-  const details = event.error == null ? '' : `\n${formatStreamData(event.error)}`
-  return `[tool:error] ${event.name}${details}`
-}
-
-function formatAgentStreamContent(progressEntries: string[], reply: string): string {
-  const trimmedReply = reply.trim()
-  const progressBlock = progressEntries.join('\n\n').trim()
-
-  if (progressBlock && trimmedReply) {
-    return `Progress:\n${progressBlock}\n\nResponse:\n${trimmedReply}`
-  }
-
-  if (progressBlock) {
-    return `Progress:\n${progressBlock}`
-  }
-
-  if (trimmedReply) {
-    return trimmedReply
-  }
-
-  return 'Working...'
-}
-
-function updateStreamedAgentMessage(
-  conversationId: string,
-  agentMessageId: string,
-  progressEntries: string[],
-  reply: string,
-) {
-  const content = formatAgentStreamContent(progressEntries, reply)
-  updateConversationMessages(conversationId, messages =>
-    messages.map(msg => msg.id === agentMessageId ? { ...msg, content } : msg)
-  )
+function appendTimelineDetail(current: string, label: string, data?: unknown): string {
+  const details = data == null ? label : `${label}\n${formatStreamData(data)}`
+  return current ? `${current}\n\n${details}` : details
 }
 
 async function onSend(message: string) {
@@ -187,15 +141,6 @@ async function onSend(message: string) {
     date: new Date().toISOString()
   }
   updateConversationMessages(conversation.id, messages => [...messages, userMsg])
-
-  const agentMessageId = `${conversation.id}-a-${Date.now()}`
-  const agentMsg: ChatMessage = {
-    id: agentMessageId,
-    role: 'agent',
-    content: 'Working...',
-    date: new Date().toISOString()
-  }
-  updateConversationMessages(conversation.id, messages => [...messages, agentMsg])
 
   sendLoading.value = true
   try {
@@ -215,31 +160,234 @@ async function onSend(message: string) {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let finalReply = ''
-    const progressEntries: string[] = []
+    let currentTextMessageId: string | null = null
+    let currentTextContent = ''
+    let currentToolMessageId: string | null = null
+    let currentToolTimeline: ChatTimelineItem[] = []
+    let currentToolTimelineIndexByKey = new Map<string, number>()
+    let activeToolKeys: string[] = []
+
+    function appendAgentMessage(message: ChatMessage): string {
+      updateConversationMessages(conversation.id, messages => [...messages, message])
+      return message.id
+    }
+
+    function updateAgentMessage(
+      messageId: string,
+      updater: (message: ChatMessage) => ChatMessage,
+    ) {
+      updateConversationMessages(conversation.id, messages =>
+        messages.map(msg => msg.id === messageId ? updater(msg) : msg)
+      )
+    }
+
+    function createAgentTextMessage(initialContent = '', streamState: ChatMessage['streamState'] = 'working'): string {
+      const id = `${conversation.id}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      currentTextMessageId = appendAgentMessage({
+        id,
+        role: 'agent',
+        content: initialContent,
+        date: new Date().toISOString(),
+        streamState
+      })
+      currentTextContent = initialContent
+      return currentTextMessageId
+    }
+
+    function createAgentToolMessage(streamState: ChatMessage['streamState'] = 'working'): string {
+      const id = `${conversation.id}-a-tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      currentToolMessageId = appendAgentMessage({
+        id,
+        role: 'agent',
+        content: '',
+        date: new Date().toISOString(),
+        timeline: [],
+        streamState
+      })
+      currentToolTimeline = []
+      currentToolTimelineIndexByKey = new Map()
+      activeToolKeys = []
+      return currentToolMessageId
+    }
+
+    function resetTextSegment() {
+      currentTextMessageId = null
+      currentTextContent = ''
+    }
+
+    function resetToolSegment() {
+      currentToolMessageId = null
+      currentToolTimeline = []
+      currentToolTimelineIndexByKey = new Map()
+      activeToolKeys = []
+    }
+
+    function finishToolSegment(streamState: ChatMessage['streamState']) {
+      syncCurrentToolMessage(streamState)
+      resetToolSegment()
+    }
+
+    function enterTextSegment(streamState: ChatMessage['streamState'] = 'working'): string {
+      if (currentToolMessageId) {
+        finishToolSegment('done')
+      }
+
+      if (!currentTextMessageId) {
+        return createAgentTextMessage('', streamState)
+      }
+
+      return currentTextMessageId
+    }
+
+    function enterToolSegment(streamState: ChatMessage['streamState'] = 'working'): string {
+      if (currentTextMessageId) {
+        resetTextSegment()
+      }
+
+      if (!currentToolMessageId) {
+        return createAgentToolMessage(streamState)
+      }
+
+      return currentToolMessageId
+    }
+
+    function upsertTimelineItem(key: string, build: (existing: ChatTimelineItem | undefined) => ChatTimelineItem) {
+      const index = currentToolTimelineIndexByKey.get(key)
+      if (index == null) {
+        const item = build(undefined)
+        currentToolTimelineIndexByKey.set(key, currentToolTimeline.length)
+        currentToolTimeline.push(item)
+        return item
+      }
+
+      const item = build(currentToolTimeline[index])
+      currentToolTimeline[index] = item
+      return item
+    }
+
+    function getActiveToolKey() {
+      return activeToolKeys.at(-1) ?? null
+    }
+
+    function syncCurrentToolMessage(streamState: ChatMessage['streamState']) {
+      if (!currentToolMessageId) return
+
+      updateAgentMessage(currentToolMessageId, message => ({
+        ...message,
+        timeline: [...currentToolTimeline],
+        streamState
+      }))
+    }
 
     const handleStreamChunk = (chunk: ChatStreamChunk) => {
       if (chunk.type === 'message') {
-        finalReply += chunk.delta
-        updateStreamedAgentMessage(conversation.id, agentMessageId, progressEntries, finalReply)
+        const messageId = enterTextSegment('working')
+        currentTextContent += chunk.delta
+        updateAgentMessage(messageId, message => ({
+          ...message,
+          content: currentTextContent,
+          streamState: 'working'
+        }))
         return
       }
 
       if (chunk.type === 'tool') {
-        progressEntries.push(formatToolStreamEvent(chunk.event))
-        updateStreamedAgentMessage(conversation.id, agentMessageId, progressEntries, finalReply)
+        enterToolSegment('working')
+        const event = chunk.event
+        const key = event.toolCallId ?? `${event.name}-${currentToolTimeline.length}`
+
+        if (event.event === 'on_tool_start') {
+          upsertTimelineItem(key, (existing) => ({
+            value: key,
+            slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+            date: existing?.date ?? new Date().toISOString(),
+            title: event.name,
+            description: appendTimelineDetail(existing?.description ?? '', '[start]', event.input),
+            icon: 'i-lucide-loader-circle'
+          }))
+          activeToolKeys.push(key)
+          syncCurrentToolMessage('working')
+          return
+        }
+
+        if (event.event === 'on_tool_event') {
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
+          if (!activeKey) return
+
+          upsertTimelineItem(activeKey, (existing) => ({
+            value: existing?.value ?? activeKey,
+            slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+            date: existing?.date ?? new Date().toISOString(),
+            title: existing?.title ?? event.name,
+            description: appendTimelineDetail(existing?.description ?? '', '[progress]', event.data),
+            icon: 'i-lucide-loader-circle'
+          }))
+          syncCurrentToolMessage('working')
+          return
+        }
+
+        if (event.event === 'on_tool_end') {
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
+          if (!activeKey) return
+
+          upsertTimelineItem(activeKey, (existing) => ({
+            value: existing?.value ?? activeKey,
+            slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+            date: existing?.date ?? new Date().toISOString(),
+            title: existing?.title ?? event.name,
+            description: appendTimelineDetail(existing?.description ?? '', '[done]', event.output),
+            icon: 'i-lucide-circle-check'
+          }))
+
+          const activeIndex = activeToolKeys.lastIndexOf(activeKey)
+          if (activeIndex >= 0) activeToolKeys.splice(activeIndex, 1)
+          syncCurrentToolMessage(activeToolKeys.length > 0 ? 'working' : 'done')
+          return
+        }
+
+        const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey() ?? key
+        upsertTimelineItem(activeKey, (existing) => ({
+          value: existing?.value ?? activeKey,
+          slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+          date: existing?.date ?? new Date().toISOString(),
+          title: existing?.title ?? event.name,
+          description: appendTimelineDetail(existing?.description ?? '', '[error]', event.error),
+          icon: 'i-lucide-circle-alert'
+        }))
+
+        const activeIndex = activeToolKeys.lastIndexOf(activeKey)
+        if (activeIndex >= 0) activeToolKeys.splice(activeIndex, 1)
+        syncCurrentToolMessage('error')
         return
       }
 
       if (chunk.type === 'progress') {
-        progressEntries.push(formatStreamData(chunk.data))
-        updateStreamedAgentMessage(conversation.id, agentMessageId, progressEntries, finalReply)
+        if (!currentToolMessageId) return
+
+        const activeKey = getActiveToolKey()
+        if (!activeKey) return
+
+        upsertTimelineItem(activeKey, (existing) => ({
+          value: existing?.value ?? activeKey,
+          slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+          date: existing?.date ?? new Date().toISOString(),
+          title: existing?.title ?? 'Tool',
+          description: appendTimelineDetail(existing?.description ?? '', '[progress]', chunk.data),
+          icon: existing?.icon ?? 'i-lucide-loader-circle'
+        }))
+        syncCurrentToolMessage('working')
         return
       }
 
       if (chunk.type === 'result') {
-        finalReply = chunk.reply || finalReply || '(No response)'
-        updateStreamedAgentMessage(conversation.id, agentMessageId, progressEntries, finalReply)
+        const reply = chunk.reply || currentTextContent || '(No response)'
+        const messageId = enterTextSegment('done')
+        currentTextContent = reply
+        updateAgentMessage(messageId, message => ({
+          ...message,
+          content: reply,
+          streamState: 'done'
+        }))
         return
       }
 
@@ -265,8 +413,6 @@ async function onSend(message: string) {
     if (trailing) {
       handleStreamChunk(JSON.parse(trailing) as ChatStreamChunk)
     }
-
-    updateStreamedAgentMessage(conversation.id, agentMessageId, progressEntries, finalReply || '(No response)')
   } catch (e: any) {
     const errMsg = e?.data?.message || e?.data?.data?.message || e?.message || `Failed to get response from ${conversation.agent.name}`
     toast.add({
@@ -275,7 +421,21 @@ async function onSend(message: string) {
       icon: 'i-lucide-alert-circle',
       color: 'error'
     })
-    updateStreamedAgentMessage(conversation.id, agentMessageId, [`[error] ${errMsg}`], '')
+
+    if (currentToolMessageId) {
+      syncCurrentToolMessage('error')
+    }
+
+    updateConversationMessages(conversation.id, messages => [
+      ...messages,
+      {
+        id: `${conversation.id}-a-error-${Date.now()}`,
+        role: 'agent',
+        content: `Error: ${errMsg}`,
+        date: new Date().toISOString(),
+        streamState: 'error'
+      }
+    ])
   } finally {
     sendLoading.value = false
   }
