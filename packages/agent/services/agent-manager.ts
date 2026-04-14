@@ -54,7 +54,11 @@ function extractReasoningContent(message: unknown): string {
 function extractReplyFromState(state: unknown): string {
   if (!state || typeof state !== 'object') return ''
 
-  const messages = (state as { messages?: Array<{ content?: unknown }> }).messages
+  const stateValues = 'values' in state && state.values && typeof state.values === 'object'
+    ? state.values
+    : state
+
+  const messages = (stateValues as { messages?: Array<{ content?: unknown }> }).messages
   if (!Array.isArray(messages) || messages.length === 0) return ''
 
   const lastMessage = messages.at(-1)
@@ -160,17 +164,21 @@ export function createAgentManager() {
 
       const agent = agentData.agent
       if (!agent?.stream) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no stream method`)
+      if (!agent?.getState) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no getState method`)
+
+      const config = {
+        configurable: { thread_id: threadId }
+      }
 
       const stream = await agent.stream(
         { messages: [{ role: 'user' as const, content: message }] },
         {
-          configurable: { thread_id: threadId },
-          streamMode: ['messages', 'values', 'tools', 'custom']
+          ...config,
+          streamMode: ['messages', 'tools', 'custom']
         },
       )
 
       let streamedReply = ''
-      let finalReply = ''
 
       for await (const chunk of stream) {
         if (!Array.isArray(chunk) || chunk.length < 2) continue
@@ -197,14 +205,6 @@ export function createAgentManager() {
           continue
         }
 
-        if (mode === 'values') {
-          const reply = extractReplyFromState(payload)
-          if (reply) {
-            finalReply = reply
-          }
-          continue
-        }
-
         if (mode === 'tools') {
           writer({
             type: 'tool',
@@ -220,6 +220,9 @@ export function createAgentManager() {
           })
         }
       }
+
+      const finalState = await agent.getState(config)
+      const finalReply = extractReplyFromState(finalState)
 
       writer({
         type: 'result',
