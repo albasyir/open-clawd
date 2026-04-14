@@ -255,7 +255,7 @@ async function confirmRemove() {
               size="xs"
               label="Open Agent"
               icon="i-lucide-external-link"
-              :to="`/agents?id=${dep.agentId}`"
+              :to="`/agents/${dep.agentId}`"
               target="_blank"
             />
           </li>

@@ -1,3 +1,4 @@
+import { AIMessageChunk } from '@langchain/core/messages'
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -6,6 +7,17 @@ import type { AgentInfo, AgentFileInfo, TemplateInfo } from '../types'
 import agents from '../agents'
 import { resolveBaseDir } from './resolve-base'
 import { registerAgent, unregisterAgent } from './agent-registry'
+
+type AgentChatStreamWriter = (chunk: unknown) => void
+type AgentToolStreamEvent = {
+  event: 'on_tool_start' | 'on_tool_event' | 'on_tool_end' | 'on_tool_error'
+  toolCallId?: string
+  name: string
+  input?: unknown
+  data?: unknown
+  output?: unknown
+  error?: unknown
+}
 
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content
@@ -18,6 +30,16 @@ function extractTextContent(content: unknown): string {
   }
   if (content != null && typeof content === 'object') return JSON.stringify(content)
   return ''
+}
+
+function extractReplyFromState(state: unknown): string {
+  if (!state || typeof state !== 'object') return ''
+
+  const messages = (state as { messages?: Array<{ content?: unknown }> }).messages
+  if (!Array.isArray(messages) || messages.length === 0) return ''
+
+  const lastMessage = messages.at(-1)
+  return lastMessage ? extractTextContent(lastMessage.content) : ''
 }
 
 const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
@@ -106,6 +128,79 @@ export function createAgentManager() {
       const lastMessage = allMessages.at(-1) as { content?: unknown } | undefined
       const reply = lastMessage ? extractTextContent(lastMessage.content) : ''
       return { reply: reply || '(No response from agent)' }
+    },
+
+    async streamAgent(
+      id: string,
+      threadId: string,
+      message: string,
+      writer: AgentChatStreamWriter,
+    ): Promise<void> {
+      const agentData = agents[id]
+      if (!agentData) throw new AgentError('NOT_FOUND', `Agent "${id}" not found`)
+
+      const agent = agentData.agent
+      if (!agent?.stream) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no stream method`)
+
+      const stream = await agent.stream(
+        { messages: [{ role: 'user' as const, content: message }] },
+        {
+          configurable: { thread_id: threadId },
+          streamMode: ['messages', 'values', 'tools', 'custom']
+        },
+      )
+
+      let streamedReply = ''
+      let finalReply = ''
+
+      for await (const chunk of stream) {
+        if (!Array.isArray(chunk) || chunk.length < 2) continue
+
+        const [mode, payload] = chunk as [string, unknown]
+
+        if (mode === 'messages' && Array.isArray(payload)) {
+          const [messageChunk] = payload as [{ content?: unknown; type?: string }]
+          if (!messageChunk) continue
+
+          const isAiChunk = AIMessageChunk.isInstance(messageChunk) || messageChunk.type === 'ai'
+          if (!isAiChunk) continue
+
+          const delta = extractTextContent(messageChunk.content)
+          if (!delta) continue
+
+          streamedReply += delta
+          writer({ type: 'message', delta })
+          continue
+        }
+
+        if (mode === 'values') {
+          const reply = extractReplyFromState(payload)
+          if (reply) {
+            finalReply = reply
+          }
+          continue
+        }
+
+        if (mode === 'tools') {
+          writer({
+            type: 'tool',
+            event: payload as AgentToolStreamEvent
+          })
+          continue
+        }
+
+        if (mode === 'custom') {
+          writer({
+            type: 'progress',
+            data: payload
+          })
+        }
+      }
+
+      writer({
+        type: 'result',
+        reply: finalReply || streamedReply || '(No response from agent)'
+      })
     },
 
     listAgentFiles(agentId: string): AgentFileInfo[] {

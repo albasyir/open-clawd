@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { createAgentChatStreamResponse } from '../../../utils/agent-chat-stream'
 
 export default defineEventHandler(async (event) => {
   const { id } = await getValidatedRouterParams(event, z.object({
@@ -8,9 +9,16 @@ export default defineEventHandler(async (event) => {
   const body = await readValidatedBody(event, z.object({
     thread_id: z.string().min(1, 'Request body must include thread_id.'),
     message: z.string().min(1, 'Request body must include message (non-empty string).'),
+    stream: z.boolean().optional(),
   }).parse)
 
   try {
+    if (body.stream) {
+      return createAgentChatStreamResponse(async (write: (chunk: unknown) => void) => {
+        await agentManager.streamAgent(id, body.thread_id.trim(), body.message.trim(), write)
+      })
+    }
+
     return await agentManager.invokeAgent(id, body.thread_id.trim(), body.message.trim())
   } catch (err) {
     throwAgentError(err)
