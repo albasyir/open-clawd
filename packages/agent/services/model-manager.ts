@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelInfo } from '../types'
+import { resolveBaseDir } from './resolve-base'
 
-export function createModelManager(baseDir: string) {
-  const modelsDir = join(baseDir, 'models')
+export function createModelManager() {
+  const modelsDir = join(resolveBaseDir(), 'models')
 
   return {
     list(): ModelInfo[] {

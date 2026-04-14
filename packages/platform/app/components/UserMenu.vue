@@ -101,17 +101,17 @@ const items = computed<DropdownMenuItem[][]>(() => ([[{
     }
   }]
 }], [{
-  label: 'Templates',
+  label: 'Head Quarters',
   icon: 'i-lucide-layout-template',
-  to: '/coming-soon'
+  to: '/redirect/hq'
 }, {
   label: 'Documentation',
   icon: 'i-lucide-book-open',
-  to: '/coming-soon'
+  to: '/redirect/docs'
 }, {
   label: 'GitHub repository',
   icon: 'i-simple-icons-github',
-  to: '/coming-soon'
+  to: '/redirect/github'
 }, {
   label: 'Log out',
   icon: 'i-lucide-log-out'

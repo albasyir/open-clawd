@@ -28,11 +28,19 @@ const copying = ref(false)
 const testModalOpen = ref(false)
 const testInput = ref('')
 const testResult = ref<{ success: boolean, result?: unknown, error?: string } | null>(null)
+const testLog = ref<string[]>([])
 const testing = ref(false)
+const activeTestAbortController = ref<AbortController | null>(null)
+
+type TestStreamChunk
+  = { type: 'start', label: string }
+    | { type: 'progress', data: unknown }
+    | { type: 'result', success: boolean, result?: unknown, error?: string }
 
 const sampleInputs: Record<string, string> = {
   'math': JSON.stringify({ a: 1, b: 2, operation: 'add' }, null, 2),
   'get-weather': JSON.stringify({ city: 'London' }, null, 2),
+  'shell': JSON.stringify({ command: 'echo hello' }, null, 2),
   'cli': JSON.stringify({ command: 'echo hello' }, null, 2)
 }
 
@@ -42,6 +50,7 @@ watch(
     code.value = newTool.content ?? ''
     testInput.value = sampleInputs[newTool.id] ?? '{}'
     testResult.value = null
+    testLog.value = []
   },
   { immediate: false }
 )
@@ -49,6 +58,7 @@ watch(
 function openTestModal() {
   testInput.value = sampleInputs[props.tool.id] ?? '{}'
   testResult.value = null
+  testLog.value = []
   testModalOpen.value = true
 }
 
@@ -73,24 +83,61 @@ async function runTest() {
     toast.add({ title: 'Invalid JSON', description: 'Check the test input syntax.', color: 'error' })
     return
   }
+  activeTestAbortController.value?.abort()
+  const abortController = new AbortController()
+  activeTestAbortController.value = abortController
   testing.value = true
   testResult.value = null
+  testLog.value = []
   try {
-    const res = await $fetch<{ success: boolean, result?: unknown, error?: string }>(
-      `${toolsBase.value}/${props.tool.id}/test`,
-      { method: 'POST', body: { input: inputObj } }
-    )
-    testResult.value = res
-    if (res.success) {
-      toast.add({ title: 'Test passed', description: `Result: ${JSON.stringify(res.result)}`, color: 'success' })
-    } else {
-      toast.add({ title: 'Test failed', description: res.error, color: 'error' })
+    const response = await fetch(`${toolsBase.value}/${props.tool.id}/test/stream`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'accept': 'application/x-ndjson'
+      },
+      body: JSON.stringify({ input: inputObj }),
+      signal: abortController.signal
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error(await response.text() || 'Failed to start test stream')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        handleTestStreamChunk(JSON.parse(trimmed) as TestStreamChunk)
+      }
+    }
+
+    const trailing = buffer.trim()
+    if (trailing) {
+      handleTestStreamChunk(JSON.parse(trailing) as TestStreamChunk)
     }
   } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      return
+    }
     const err = e instanceof Error ? e.message : String(e)
     testResult.value = { success: false, error: err }
-    toast.add({ title: 'Test error', description: err, color: 'error' })
+    appendTestLog(`[error] ${err}`)
   } finally {
+    if (activeTestAbortController.value === abortController) {
+      activeTestAbortController.value = null
+    }
     testing.value = false
   }
 }
@@ -147,8 +194,8 @@ async function copyToLocal() {
       color: 'success'
     })
     emits('copied')
-  } catch (e: any) {
-    const msg = e?.data?.message ?? e?.message ?? 'Failed to copy tool'
+  } catch (e) {
+    const msg = getErrorMessage(e, 'Failed to copy tool')
     toast.add({ title: 'Copy failed', description: msg, color: 'error' })
   } finally {
     copying.value = false
@@ -166,8 +213,114 @@ const editorOptions = computed(() => ({
   readOnly: isSymlink.value
 }))
 
+const testInputEditorOptions = {
+  automaticLayout: true,
+  formatOnPaste: true,
+  formatOnType: true,
+  minimap: { enabled: false },
+  fontSize: 13,
+  lineNumbers: 'on' as const,
+  scrollBeyondLastLine: false,
+  tabSize: 2,
+  wordWrap: 'on' as const
+}
+
+const testResultEditorOptions = {
+  automaticLayout: true,
+  minimap: { enabled: false },
+  fontSize: 13,
+  lineNumbers: 'off' as const,
+  readOnly: true,
+  renderLineHighlight: 'none' as const,
+  scrollBeyondLastLine: false,
+  wordWrap: 'on' as const
+}
+
 const editorLanguage = computed(() => props.tool.id.endsWith('.md') ? 'markdown' : 'typescript')
 const displayFilename = computed(() => props.tool.id.includes('.') ? props.tool.id : `${props.tool.id}.ts`)
+const testLogText = computed(() => {
+  if (testLog.value.length > 0) {
+    return testLog.value.join('\n\n')
+  }
+
+  if (testing.value) {
+    return 'Waiting for streamed progress...'
+  }
+
+  return 'Progress updates from the tool test will appear here.'
+})
+
+const testResultText = computed(() => {
+  if (!testResult.value) {
+    return testing.value
+      ? 'Waiting for the tool to finish...'
+      : 'Run a test to inspect the tool response here.'
+  }
+
+  if (testResult.value.success) {
+    return JSON.stringify(testResult.value.result ?? null, null, 2)
+  }
+
+  return testResult.value.error ?? 'Unknown error'
+})
+
+const testResultLanguage = computed(() => testResult.value?.success ? 'json' : 'plaintext')
+const testResultTone = computed(() => testResult.value?.success ? 'text-success' : 'text-error')
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error && 'data' in error) {
+    const data = (error as { data?: { message?: string } }).data
+    if (typeof data?.message === 'string' && data.message) {
+      return data.message
+    }
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  return fallback
+}
+
+function formatTestLogChunk(data: unknown): string {
+  if (typeof data === 'string') {
+    return data
+  }
+
+  try {
+    return JSON.stringify(data, null, 2)
+  } catch {
+    return String(data)
+  }
+}
+
+function appendTestLog(entry: string): void {
+  testLog.value = [...testLog.value, entry]
+}
+
+function handleTestStreamChunk(chunk: TestStreamChunk): void {
+  if (chunk.type === 'start') {
+    appendTestLog(`[start] ${chunk.label}`)
+    return
+  }
+
+  if (chunk.type === 'progress') {
+    appendTestLog(formatTestLogChunk(chunk.data))
+    return
+  }
+
+  testResult.value = chunk.success
+    ? { success: true, result: chunk.result }
+    : { success: false, error: chunk.error ?? 'Unknown error' }
+
+  appendTestLog(chunk.success ? '[done] Tool finished successfully.' : `[done] ${chunk.error ?? 'Tool failed.'}`)
+}
+
+watch(testModalOpen, (isOpen) => {
+  if (!isOpen) {
+    activeTestAbortController.value?.abort()
+  }
+})
 </script>
 
 <template>
@@ -248,36 +401,102 @@ const displayFilename = computed(() => props.tool.id.includes('.') ? props.tool.
       </ClientOnly>
     </div>
 
-    <UModal v-model:open="testModalOpen" title="Test tool">
+    <UModal
+      v-model:open="testModalOpen"
+      title="Test tool"
+      fullscreen
+      :ui="{
+        content: 'inset-0 h-dvh',
+        body: 'flex-1 overflow-hidden p-0',
+        footer: 'border-t border-default'
+      }"
+    >
       <template #body>
-        <div class="p-4 space-y-4">
-          <div>
-            <label class="text-sm font-medium text-highlighted mb-1.5 block">Input (JSON)</label>
-            <UTextarea
-              v-model="testInput"
-              :rows="8"
-              class="font-mono text-sm"
-              placeholder="e.g. { &quot;a&quot;: 1, &quot;b&quot;: 2, &quot;operation&quot;: &quot;add&quot; }"
-            />
+        <div class="flex h-full min-h-0 flex-col lg:flex-row">
+          <div class="flex min-h-0 flex-1 flex-col border-b border-default lg:border-r lg:border-b-0">
+            <div class="flex items-center justify-between gap-3 border-b border-default px-4 py-3">
+              <div>
+                <p class="text-sm font-medium text-highlighted">
+                  Input
+                </p>
+                <p class="text-xs text-dimmed">
+                  Provide JSON passed into the tool test endpoint.
+                </p>
+              </div>
+              <UBadge label="JSON" variant="subtle" color="neutral" />
+            </div>
+            <ClientOnly>
+              <div class="min-h-0 flex-1">
+                <vue-monaco-editor
+                  v-model:value="testInput"
+                  language="json"
+                  theme="vs-dark"
+                  :options="testInputEditorOptions"
+                  class="h-full"
+                >
+                  <template #default>
+                    <span class="text-muted-foreground">Loading editor…</span>
+                  </template>
+                  <template #failure>
+                    <span class="text-destructive">Failed to load editor</span>
+                  </template>
+                </vue-monaco-editor>
+              </div>
+            </ClientOnly>
           </div>
-          <div v-if="testResult" class="rounded-lg p-3 text-sm" :class="testResult.success ? 'bg-success/10 text-success' : 'bg-error/10 text-error'">
-            <span class="font-medium">{{ testResult.success ? 'Result' : 'Error' }}</span>
-            <pre class="mt-1 whitespace-pre-wrap break-words">{{ testResult.success ? JSON.stringify(testResult.result, null, 2) : testResult.error }}</pre>
+
+          <div class="flex min-h-0 flex-1 flex-col">
+            <div class="flex items-center justify-between gap-3 border-b border-default px-4 py-3">
+              <div>
+                <p class="text-sm font-medium text-highlighted">
+                  Result
+                </p>
+                <p class="text-xs text-dimmed">
+                  The latest test output is shown here.
+                </p>
+              </div>
+              <span class="text-xs font-medium" :class="testResult ? testResultTone : 'text-dimmed'">
+                {{ testResult ? (testResult.success ? 'Success' : 'Error') : 'Waiting for run' }}
+              </span>
+            </div>
+            <div class="h-48 shrink-0 overflow-y-auto border-b border-default bg-elevated/20 px-4 py-3">
+              <pre class="whitespace-pre-wrap break-words text-xs text-dimmed">{{ testLogText }}</pre>
+            </div>
+            <ClientOnly>
+              <div class="min-h-0 flex-1">
+                <vue-monaco-editor
+                  :value="testResultText"
+                  :language="testResultLanguage"
+                  theme="vs-dark"
+                  :options="testResultEditorOptions"
+                  class="h-full"
+                >
+                  <template #default>
+                    <span class="text-muted-foreground">Loading result…</span>
+                  </template>
+                  <template #failure>
+                    <span class="text-destructive">Failed to load editor</span>
+                  </template>
+                </vue-monaco-editor>
+              </div>
+            </ClientOnly>
           </div>
-          <div class="flex justify-end gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              label="Close"
-              @click="testModalOpen = false"
-            />
-            <UButton
-              icon="i-lucide-play"
-              :loading="testing"
-              label="Run test"
-              @click="runTest"
-            />
-          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            label="Close"
+            @click="testModalOpen = false"
+          />
+          <UButton
+            icon="i-lucide-play"
+            :loading="testing"
+            label="Run test"
+            @click="runTest"
+          />
         </div>
       </template>
     </UModal>

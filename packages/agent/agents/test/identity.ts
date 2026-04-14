@@ -1,3 +1,4 @@
 export default {
-  name: 'test'
+  name: 'Miley',
+  owner: 'Abdul Aziz Al Basyir',
 }

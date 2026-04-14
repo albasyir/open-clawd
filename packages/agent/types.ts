@@ -1,8 +1,10 @@
+export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT'
+
 export class AgentError extends Error {
-  statusCode: number
-  constructor(statusCode: number, message: string) {
+  code: AgentErrorCode
+  constructor(code: AgentErrorCode, message: string) {
     super(message)
-    this.statusCode = statusCode
+    this.code = code
   }
 }
 

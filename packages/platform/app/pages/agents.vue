@@ -11,36 +11,52 @@ const selectedTab = ref('all')
 
 const { data: chatsData, refresh: refreshChats } = await useFetch<AgentConversation[]>('/api/agents/chats', { default: () => [] })
 
+function findConversationById(conversations: AgentConversation[], id: string): AgentConversation | null {
+  for (const conversation of conversations) {
+    if (conversation.id === id) return conversation
+  }
+
+  return null
+}
+
 /** Threads: one per agent from API, plus new threads from "New chat". Keyed by thread id so each chat has its own messages. */
 const threads = ref<AgentConversation[]>([])
 watch(chatsData, (data) => {
-  if (data?.length) {
-    threads.value = [...data]
-  }
+  threads.value = data ? [...data] : []
 }, { immediate: true })
 
-const filteredConversations = computed(() => {
-  const list = threads.value
-  return (selectedTab.value === 'unread' ? list.filter(c => !!c.unread) : list) as AgentConversation[]
-})
+const filteredConversations = ref<AgentConversation[]>([])
+watch([threads, selectedTab], ([conversations, tab]) => {
+  filteredConversations.value = tab === 'unread'
+    ? conversations.filter((conversation) => !!conversation.unread)
+    : conversations
+}, { immediate: true })
 
 const selectedConversationId = ref<string | null>(null)
 
-const selectedConversation = computed(() => {
-  if (!selectedConversationId.value) return null
-  return filteredConversations.value.find(c => c.id === selectedConversationId.value) ?? null
-})
+const selectedConversation = ref<AgentConversation | null>(null)
+watch([filteredConversations, selectedConversationId], ([conversations, selectedId]) => {
+  selectedConversation.value = selectedId
+    ? findConversationById(conversations, selectedId)
+    : null
+}, { immediate: true })
 
 /** Live messages per thread id (each chat has its own history). */
 const agentMessagesMap = ref<Record<string, ChatMessage[]>>({})
 
 /** Conversation to pass to chat: use live messages from map, else list data. */
-const displayConversation = computed(() => {
-  const c = selectedConversation.value
-  if (!c) return null
-  const messages = agentMessagesMap.value[c.id] ?? c.messages
-  return { ...c, messages }
-})
+const displayConversation = ref<AgentConversation | null>(null)
+watch([selectedConversation, agentMessagesMap], ([conversation, messagesMap]) => {
+  if (!conversation) {
+    displayConversation.value = null
+    return
+  }
+
+  displayConversation.value = {
+    ...conversation,
+    messages: messagesMap[conversation.id] ?? conversation.messages
+  }
+}, { immediate: true, deep: true })
 
 const isChatPanelOpen = computed({
   get: () => !!selectedConversationId.value,
@@ -50,7 +66,7 @@ const isChatPanelOpen = computed({
 })
 
 watch(filteredConversations, () => {
-  if (selectedConversationId.value && !filteredConversations.value.find(c => c.id === selectedConversationId.value)) {
+  if (selectedConversationId.value && !findConversationById(filteredConversations.value, selectedConversationId.value)) {
     selectedConversationId.value = null
   }
 })
@@ -114,17 +130,17 @@ const breakpoints = useBreakpoints(breakpointsTailwind)
 const isMobile = breakpoints.smaller('lg')
 
 const addAgentModalOpen = ref(false)
+const removeModalOpen = ref(false)
+const removeLoading = ref(false)
+const agentToRemove = ref<AgentConversation | null>(null)
 
 async function onAgentCreated(newAgentId: string) {
   await refreshChats()
-  const newConversation = threads.value.find(c => c.id === newAgentId)
-  if (newConversation) {
-    selectedConversationId.value = newConversation.id
-    // Small delay to let chat component mount
-    setTimeout(() => {
-      openAgentSystemEditor(newAgentId)
-    }, 100)
-  }
+  selectedConversationId.value = newAgentId
+  // Small delay to let chat component mount
+  setTimeout(() => {
+    openAgentSystemEditor(newAgentId)
+  }, 100)
 }
 
 const chatPanelRef = ref()
@@ -133,6 +149,54 @@ function openAgentSystemEditor(agentId: string) {
     chatPanelRef.value.openAgentFiles('identity.ts')
   }
 }
+
+function promptDeleteAgent(conversation: AgentConversation) {
+  agentToRemove.value = conversation
+  removeModalOpen.value = true
+}
+
+function clearDeletedAgentState(agentId: string) {
+  if (selectedConversationId.value === agentId) {
+    selectedConversationId.value = null
+  }
+
+  agentMessagesMap.value = Object.fromEntries(
+    Object.entries(agentMessagesMap.value).filter(([threadId]) => threadId !== agentId)
+  )
+}
+
+async function confirmDeleteAgent() {
+  const conversation = agentToRemove.value
+  if (!conversation || removeLoading.value) return
+
+  removeLoading.value = true
+  try {
+    await $fetch(`/api/agents/${conversation.agentId}`, { method: 'DELETE' })
+    clearDeletedAgentState(conversation.id)
+    await refreshChats()
+    toast.add({
+      title: 'Agent deleted',
+      description: `${conversation.agent.name} has been removed.`,
+      color: 'success'
+    })
+    removeModalOpen.value = false
+    agentToRemove.value = null
+  } catch (e: any) {
+    toast.add({
+      title: 'Delete failed',
+      description: e?.data?.message || e?.message || 'Failed to delete agent',
+      color: 'error'
+    })
+  } finally {
+    removeLoading.value = false
+  }
+}
+
+watch(removeModalOpen, (isOpen) => {
+  if (!isOpen && !removeLoading.value) {
+    agentToRemove.value = null
+  }
+})
 </script>
 
 <template>
@@ -168,7 +232,11 @@ function openAgentSystemEditor(agentId: string) {
         />
       </template>
     </UDashboardNavbar>
-    <AgentList v-model="selectedConversationId" :conversations="filteredConversations" />
+    <AgentList
+      v-model="selectedConversationId"
+      :conversations="filteredConversations"
+      :on-remove="promptDeleteAgent"
+    />
   </UDashboardPanel>
 
   <UDashboardPanel id="agents-2" :default-size="75" :min-size="50" class="flex flex-1 flex-col min-w-0 w-full">
@@ -180,6 +248,7 @@ function openAgentSystemEditor(agentId: string) {
       :conversation="displayConversation"
       :send-loading="sendLoading"
       @close="selectedConversationId = null"
+      @delete-agent="promptDeleteAgent(displayConversation)"
       @send="onSend"
     />
     <div v-else class="flex flex-1 flex-col items-center justify-center min-h-0 p-6">
@@ -197,6 +266,7 @@ function openAgentSystemEditor(agentId: string) {
           :conversation="displayConversation"
           :send-loading="sendLoading"
           @close="selectedConversationId = null"
+          @delete-agent="promptDeleteAgent(displayConversation)"
           @send="onSend"
         />
       </template>
@@ -204,6 +274,36 @@ function openAgentSystemEditor(agentId: string) {
   </ClientOnly>
 
   <AgentAddAgentModal v-model:open="addAgentModalOpen" @created="onAgentCreated" />
+
+  <UModal
+    v-model:open="removeModalOpen"
+    :title="`Delete ${agentToRemove?.agent.name ?? 'agent'}?`"
+    :description="'This removes the agent folder and unregisters it from the platform.'"
+  >
+    <template #body>
+      <div class="space-y-4 p-4">
+        <p class="text-sm text-dimmed">
+          This action cannot be undone.
+        </p>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="Cancel"
+            color="neutral"
+            variant="ghost"
+            :disabled="removeLoading"
+            @click="removeModalOpen = false"
+          />
+          <UButton
+            label="Delete"
+            icon="i-lucide-trash-2"
+            color="error"
+            :loading="removeLoading"
+            @click="confirmDeleteAgent"
+          />
+        </div>
+      </div>
+    </template>
+  </UModal>
 </template>
 
 <style scoped>

@@ -1,8 +1,11 @@
-import { cpSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { AgentError } from '../types'
 import type { AgentInfo, AgentFileInfo, TemplateInfo } from '../types'
 import agents from '../agents'
+import { resolveBaseDir } from './resolve-base'
+import { registerAgent, unregisterAgent } from './agent-registry'
 
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content
@@ -19,58 +22,79 @@ function extractTextContent(content: unknown): string {
 
 const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
 
-export function createAgentManager(baseDir: string) {
+export function createAgentManager() {
+  const baseDir = resolveBaseDir()
   const agentsDir = join(baseDir, 'agents')
   const templatesDir = join(baseDir, 'templates', 'agent')
 
   return {
     listAgents(): AgentInfo[] {
       const now = new Date().toISOString()
-      return Object.entries(agents).map(([id, data]) => {
-        let name = id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ')
-        if (data.identity?.name) name = data.identity.name
-        return {
-          id,
-          agentId: id,
-          agent: {
-            name,
-            avatar: { src: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(id)}` },
-          },
-          messages: [],
-          updatedAt: now,
-        }
-      })
+      return readdirSync(agentsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+        .map((entry) => entry.name)
+        .map((id) => {
+          const data = agents[id]
+          let name = id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ')
+          if (data?.identity?.name) name = data.identity.name
+          return {
+            id,
+            agentId: id,
+            agent: {
+              name,
+              avatar: { src: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(id)}` },
+            },
+            messages: [],
+            updatedAt: now,
+          }
+        })
     },
 
     createAgent(name: string, template: string): AgentInfo {
-      const newAgentDir = join(agentsDir, name)
-      if (existsSync(newAgentDir)) {
-        throw new AgentError(409, 'Agent with this name already exists')
-      }
       const templateDir = join(templatesDir, template)
       if (!existsSync(templateDir)) {
-        throw new AgentError(404, 'Template not found')
+        throw new AgentError('NOT_FOUND', 'Template not found')
       }
+
+      let agentId = randomUUID()
+      let newAgentDir = join(agentsDir, agentId)
+      while (existsSync(newAgentDir)) {
+        agentId = randomUUID()
+        newAgentDir = join(agentsDir, agentId)
+      }
+
       cpSync(templateDir, newAgentDir, { recursive: true })
-      const agentName = name.charAt(0).toUpperCase() + name.slice(1).replace(/[-_]/g, ' ')
+      registerAgent(baseDir, agentId)
+
+      const agentName = name.trim() || agentId
       return {
-        id: name,
-        agentId: name,
+        id: agentId,
+        agentId,
         agent: {
           name: agentName,
-          avatar: { src: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name)}` },
+          avatar: { src: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(agentId)}` },
         },
         messages: [],
         updatedAt: new Date().toISOString(),
       }
     },
 
+    deleteAgent(id: string): void {
+      const agentDir = join(agentsDir, id)
+      if (!existsSync(agentDir)) {
+        throw new AgentError('NOT_FOUND', `Agent "${id}" not found`)
+      }
+
+      rmSync(agentDir, { recursive: true, force: false })
+      unregisterAgent(baseDir, id)
+    },
+
     async invokeAgent(id: string, threadId: string, message: string): Promise<{ reply: string }> {
       const agentData = agents[id]
-      if (!agentData) throw new AgentError(404, `Agent "${id}" not found`)
+      if (!agentData) throw new AgentError('NOT_FOUND', `Agent "${id}" not found`)
 
       const agent = agentData.agent
-      if (!agent?.invoke) throw new AgentError(404, `Agent "${id}" is invalid or has no invoke method`)
+      if (!agent?.invoke) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no invoke method`)
 
       const config = { configurable: { thread_id: threadId } }
       const result = await agent.invoke(
@@ -105,7 +129,7 @@ export function createAgentManager(baseDir: string) {
 
     updateAgentFile(agentId: string, fileId: string, content: string): void {
       if (!ALLOWED_FILES.includes(fileId)) {
-        throw new AgentError(400, 'Invalid file id')
+        throw new AgentError('INVALID_INPUT', 'Invalid file id')
       }
       const filePath = join(agentsDir, agentId, fileId)
       writeFileSync(filePath, content, 'utf-8')

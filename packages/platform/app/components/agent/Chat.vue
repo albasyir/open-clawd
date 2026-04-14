@@ -17,6 +17,7 @@ const emit = defineEmits<{
   close: []
   send: [message: string]
   newChat: []
+  deleteAgent: []
 }>()
 
 const message = ref('')
@@ -69,6 +70,14 @@ defineExpose({
         />
       </template>
       <template #right>
+        <UTooltip text="Delete agent">
+          <UButton
+            icon="i-lucide-trash-2"
+            color="error"
+            variant="ghost"
+            @click="emit('deleteAgent')"
+          />
+        </UTooltip>
         <UTooltip text="Manage Agent System">
           <UButton
             icon="i-lucide-code"
@@ -188,6 +197,14 @@ defineExpose({
         />
       </template>
       <template #right>
+        <UTooltip text="Delete agent">
+          <UButton
+            icon="i-lucide-trash-2"
+            color="error"
+            variant="ghost"
+            @click="emit('deleteAgent')"
+          />
+        </UTooltip>
         <UTooltip text="Manage Agent System">
           <UButton
             icon="i-lucide-code"

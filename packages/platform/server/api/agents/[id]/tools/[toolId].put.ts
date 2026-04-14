@@ -1,25 +1,15 @@
 import { z } from 'zod'
 
-const putToolBodySchema = z.object({ content: z.string() })
-
 export default defineEventHandler(async (event) => {
-  const agentId = getRouterParam(event, 'id')
-  const toolId = getRouterParam(event, 'toolId')
-  if (!agentId || !/^[a-z0-9_-]+$/i.test(agentId)) {
-    throw createError({ statusCode: 400, message: 'Invalid agent id' })
-  }
-  if (!toolId || !/^[a-z0-9-]+$/i.test(toolId)) {
-    throw createError({ statusCode: 400, message: 'Invalid tool id' })
-  }
+  const { id, toolId } = await getValidatedRouterParams(event, z.object({
+    id: slugSchema,
+    toolId: slugSchema,
+  }).parse)
 
-  const rawBody = await readBody(event)
-  const result = putToolBodySchema.safeParse(rawBody)
-  if (!result.success) {
-    throw createError({ statusCode: 400, message: result.error.message })
-  }
+  const body = await readValidatedBody(event, z.object({ content: z.string() }).parse)
 
   try {
-    toolManager.updateForAgent(agentId, toolId, result.data.content)
+    toolManager.updateForAgent(id, toolId, body.content)
     return { ok: true }
   } catch (err) {
     throwAgentError(err)

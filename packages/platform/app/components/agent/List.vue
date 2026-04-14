@@ -4,6 +4,7 @@ import type { AgentConversation } from '~/types'
 
 const props = defineProps<{
   conversations: AgentConversation[]
+  onRemove?: (conversation: AgentConversation) => void
 }>()
 
 const conversationsRefs = ref<Record<string, Element | null>>({})
@@ -54,12 +55,24 @@ defineShortcuts({
         ]"
         @click="selectedConversationId = conversation.id"
       >
-        <div class="flex items-center justify-between" :class="[conversation.unread && 'font-semibold']">
+        <div class="flex items-center justify-between gap-2" :class="[conversation.unread && 'font-semibold']">
           <div class="flex items-center gap-3">
             {{ conversation.agent.name }}
             <UChip v-if="conversation.unread" />
           </div>
-          <span>{{ isToday(new Date(conversation.updatedAt)) ? format(new Date(conversation.updatedAt), 'HH:mm') : format(new Date(conversation.updatedAt), 'dd MMM') }}</span>
+          <div class="flex items-center gap-1">
+            <span>{{ isToday(new Date(conversation.updatedAt)) ? format(new Date(conversation.updatedAt), 'HH:mm') : format(new Date(conversation.updatedAt), 'dd MMM') }}</span>
+            <UTooltip v-if="props.onRemove" text="Delete agent">
+              <UButton
+                icon="i-lucide-trash-2"
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                class="-me-1"
+                @click.stop="props.onRemove?.(conversation)"
+              />
+            </UTooltip>
+          </div>
         </div>
         <p class="truncate text-dimmed line-clamp-1 mt-0.5">
           {{ lastMessagePreview(conversation) }}

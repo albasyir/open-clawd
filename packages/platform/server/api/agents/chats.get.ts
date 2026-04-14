@@ -1,1 +1,1 @@
-export default eventHandler(() => agentManager.listAgents())
+export default defineEventHandler(() => agentManager.listAgents())

@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AgentError } from '../types'
 import type { ToolInfo, TestResult } from '../types'
+import { resolveBaseDir } from './resolve-base'
 
 const NEW_TOOL_TEMPLATE = `import { tool } from 'langchain'
 import { z } from 'zod'
@@ -67,7 +68,73 @@ function formatError(label: string, err: unknown): string {
   return stack ? `${message}\n\nAt:\n${stack}` : `In ${label}: ${message}`
 }
 
-export function createToolManager(baseDir: string) {
+type TestStreamChunk =
+  | { type: 'start'; label: string }
+  | { type: 'progress'; data: unknown }
+  | { type: 'result'; success: boolean; result?: unknown; error?: string }
+
+type TestStreamWriter = (chunk: TestStreamChunk) => void
+
+type InvokableTool = {
+  invoke: (
+    input: Record<string, unknown>,
+    config?: { writer?: (chunk: unknown) => void },
+  ) => Promise<unknown>
+}
+
+function isInvokableTool(tool: unknown): tool is InvokableTool {
+  return typeof tool === 'object' && tool !== null && 'invoke' in tool && typeof tool.invoke === 'function'
+}
+
+async function runToolTest(
+  params: {
+    absolutePath: string
+    label: string
+    input: Record<string, unknown>
+    allowCallable: boolean
+    writer?: TestStreamWriter
+  },
+): Promise<TestResult> {
+  const { absolutePath, label, input, allowCallable, writer } = params
+  const toolUrl = pathToFileURL(absolutePath).href + `?t=${Date.now()}`
+
+  writer?.({ type: 'start', label })
+
+  try {
+    const mod = await import(toolUrl)
+    const tool = mod.default
+
+    if (tool == null) {
+      return { success: false, error: `In ${label}: No default export.` }
+    }
+
+    const emitProgress = (data: unknown) => {
+      writer?.({ type: 'progress', data })
+    }
+
+    if (isInvokableTool(tool)) {
+      const result = await tool.invoke(input, { writer: emitProgress })
+      return { success: true, result }
+    }
+
+    if (allowCallable && typeof tool === 'function') {
+      const result = await tool(input, { writer: emitProgress })
+      return { success: true, result }
+    }
+
+    return {
+      success: false,
+      error: allowCallable
+        ? `In ${label}: Tool does not expose invoke() or is not callable.`
+        : `In ${label}: Tool does not expose invoke().`,
+    }
+  } catch (err) {
+    return { success: false, error: formatError(label, err) }
+  }
+}
+
+export function createToolManager() {
+  const baseDir = resolveBaseDir()
   const globalToolsDir = join(baseDir, 'tools')
   const agentsDir = join(baseDir, 'agents')
 
@@ -93,7 +160,7 @@ export function createToolManager(baseDir: string) {
     createGlobal(name: string): { id: string; name: string } {
       const filePath = join(globalToolsDir, `${name}.ts`)
       if (existsSync(filePath)) {
-        throw new AgentError(409, `Tool "${name}" already exists`)
+        throw new AgentError('ALREADY_EXISTS', `Tool "${name}" already exists`)
       }
       mkdirSync(globalToolsDir, { recursive: true })
       writeFileSync(filePath, NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
@@ -108,7 +175,7 @@ export function createToolManager(baseDir: string) {
     deleteGlobal(id: string): void {
       const filePath = join(globalToolsDir, `${id}.ts`)
       if (!existsSync(filePath)) {
-        throw new AgentError(404, `Global tool "${id}" not found`)
+        throw new AgentError('NOT_FOUND', `Global tool "${id}" not found`)
       }
       unlinkSync(filePath)
     },
@@ -116,23 +183,24 @@ export function createToolManager(baseDir: string) {
     async testGlobal(id: string, input: Record<string, unknown>): Promise<TestResult> {
       const absolutePath = join(globalToolsDir, `${id}.ts`)
       const label = `agent/tools/${id}.ts`
-      const toolUrl = pathToFileURL(absolutePath).href + `?t=${Date.now()}`
-      try {
-        const mod = await import(toolUrl)
-        const tool = mod.default
-        if (tool == null) return { success: false, error: `In ${label}: No default export.` }
-        if (typeof tool.invoke !== 'function') return { success: false, error: `In ${label}: Tool does not expose invoke().` }
-        const result = await tool.invoke(input)
-        return { success: true, result }
-      } catch (err) {
-        return { success: false, error: formatError(label, err) }
-      }
+      return runToolTest({ absolutePath, label, input, allowCallable: false })
+    },
+
+    async streamTestGlobal(
+      id: string,
+      input: Record<string, unknown>,
+      writer: TestStreamWriter,
+    ): Promise<void> {
+      const absolutePath = join(globalToolsDir, `${id}.ts`)
+      const label = `agent/tools/${id}.ts`
+      const result = await runToolTest({ absolutePath, label, input, allowCallable: false, writer })
+      writer({ type: 'result', ...result })
     },
 
     getGlobalDeps(id: string): { agentId: string; toolName: string }[] {
       const globalToolPath = join(globalToolsDir, `${id}.ts`)
       if (!existsSync(globalToolPath)) {
-        throw new AgentError(404, `Global tool "${id}" not found`)
+        throw new AgentError('NOT_FOUND', `Global tool "${id}" not found`)
       }
 
       const deps: { agentId: string; toolName: string }[] = []
@@ -186,7 +254,7 @@ export function createToolManager(baseDir: string) {
       const linkPath = join(toolsDir, `${name}.ts`)
 
       if (existsSync(linkPath)) {
-        throw new AgentError(409, `Tool "${name}" already exists`)
+        throw new AgentError('ALREADY_EXISTS', `Tool "${name}" already exists`)
       }
 
       mkdirSync(toolsDir, { recursive: true })
@@ -194,7 +262,7 @@ export function createToolManager(baseDir: string) {
       if (opts?.linkGlobal) {
         const globalPath = join(globalToolsDir, `${name}.ts`)
         if (!existsSync(globalPath)) {
-          throw new AgentError(404, `Global tool "${name}" not found`)
+          throw new AgentError('NOT_FOUND', `Global tool "${name}" not found`)
         }
         const relativeTarget = join('..', '..', '..', 'tools', `${name}.ts`)
         symlinkSync(relativeTarget, linkPath)
@@ -210,7 +278,7 @@ export function createToolManager(baseDir: string) {
       const filePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
       const stat = lstatSync(filePath, { throwIfNoEntry: false })
       if (stat?.isSymbolicLink()) {
-        throw new AgentError(400, 'Cannot edit a symlinked tool')
+        throw new AgentError('INVALID_INPUT', 'Cannot edit a symlinked tool')
       }
       writeFileSync(filePath, content, 'utf-8')
     },
@@ -218,7 +286,7 @@ export function createToolManager(baseDir: string) {
     deleteForAgent(agentId: string, toolId: string): void {
       const filePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
       if (!existsSync(filePath)) {
-        throw new AgentError(404, `Tool "${toolId}" not found`)
+        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
       }
       unlinkSync(filePath)
       removeFromToolFile(baseDir, agentId, toolId)
@@ -227,10 +295,10 @@ export function createToolManager(baseDir: string) {
     copyForAgent(agentId: string, toolId: string): { id: string; name: string; symlink: boolean; content: string } {
       const toolPath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
       if (!existsSync(toolPath)) {
-        throw new AgentError(404, `Tool "${toolId}" not found`)
+        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
       }
       if (!lstatSync(toolPath).isSymbolicLink()) {
-        throw new AgentError(400, `Tool "${toolId}" is already a local file`)
+        throw new AgentError('INVALID_INPUT', `Tool "${toolId}" is already a local file`)
       }
       const content = readFileSync(toolPath, 'utf-8')
       unlinkSync(toolPath)
@@ -244,15 +312,15 @@ export function createToolManager(baseDir: string) {
       const agentToolPath = join(toolsDir, `${toolId}.ts`)
 
       if (!existsSync(agentToolPath)) {
-        throw new AgentError(404, `Tool "${toolId}" not found`)
+        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
       }
       if (lstatSync(agentToolPath).isSymbolicLink()) {
-        throw new AgentError(400, `Tool "${toolId}" is already a global link`)
+        throw new AgentError('INVALID_INPUT', `Tool "${toolId}" is already a global link`)
       }
 
       const globalToolPath = join(globalToolsDir, `${finalName}.ts`)
       if (existsSync(globalToolPath)) {
-        throw new AgentError(409, `A global tool named "${finalName}" already exists`)
+        throw new AgentError('ALREADY_EXISTS', `A global tool named "${finalName}" already exists`)
       }
 
       mkdirSync(globalToolsDir, { recursive: true })
@@ -276,20 +344,33 @@ export function createToolManager(baseDir: string) {
 
       const stat = lstatSync(absolutePath, { throwIfNoEntry: false })
       if (stat?.isSymbolicLink()) {
-        throw new AgentError(400, 'Cannot run test for a symlinked tool')
+        throw new AgentError('INVALID_INPUT', 'Cannot run test for a symlinked tool')
       }
 
-      const toolUrl = pathToFileURL(absolutePath).href + `?t=${Date.now()}`
-      try {
-        const mod = await import(toolUrl)
-        const tool = mod.default
-        if (tool == null) return { success: false, error: `In ${label}: No default export.` }
-        if (typeof tool.invoke === 'function') return { success: true, result: await tool.invoke(input) }
-        if (typeof tool === 'function') return { success: true, result: await tool(input) }
-        return { success: false, error: `In ${label}: Tool does not expose invoke() or is not callable.` }
-      } catch (err) {
-        return { success: false, error: formatError(label, err) }
+      return runToolTest({ absolutePath, label, input, allowCallable: true })
+    },
+
+    async streamTestForAgent(
+      agentId: string,
+      toolId: string,
+      input: Record<string, unknown>,
+      writer: TestStreamWriter,
+    ): Promise<void> {
+      const absolutePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
+      const label = `agent/agents/${agentId}/tools/${toolId}.ts`
+
+      const stat = lstatSync(absolutePath, { throwIfNoEntry: false })
+      if (stat?.isSymbolicLink()) {
+        writer({
+          type: 'result',
+          success: false,
+          error: 'Cannot run test for a symlinked tool',
+        })
+        return
       }
+
+      const result = await runToolTest({ absolutePath, label, input, allowCallable: true, writer })
+      writer({ type: 'result', ...result })
     },
   }
 }

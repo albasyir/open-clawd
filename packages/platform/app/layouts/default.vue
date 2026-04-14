@@ -5,7 +5,16 @@ const toast = useToast()
 
 const open = ref(false)
 
-const links = [[{
+const links = [[
+{
+  label: 'Channels',
+  icon: 'i-lucide-channel',
+  to: '/channels',
+  onSelect: () => {
+    open.value = false
+  }
+},  
+{
   label: 'Agents',
   icon: 'i-lucide-users',
   to: '/agents',
@@ -29,14 +38,14 @@ const links = [[{
 }], [{
   label: 'Feedback',
   icon: 'i-lucide-message-circle',
-  to: '/coming-soon',
+  to: '/redirect/feedback',
   onSelect: () => {
     open.value = false
   }
 }, {
   label: 'Help & Support',
   icon: 'i-lucide-info',
-  to: '/coming-soon',
+  to: '/redirect/help',
   onSelect: () => {
     open.value = false
   }

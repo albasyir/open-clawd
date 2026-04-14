@@ -1,22 +1,17 @@
-export default eventHandler(async (event) => {
-  const id = getRouterParam(event, 'id')
-  if (!id || !/^[a-z0-9_-]+$/i.test(id)) {
-    throw createError({ statusCode: 400, message: 'Invalid agent id' })
-  }
+import { z } from 'zod'
 
-  const body = await readBody<{ thread_id: string; message: string }>(event)
-  const threadId = body?.thread_id
-  const message = typeof body?.message === 'string' ? body.message.trim() : ''
+export default defineEventHandler(async (event) => {
+  const { id } = await getValidatedRouterParams(event, z.object({
+    id: slugSchema,
+  }).parse)
 
-  if (!threadId || typeof threadId !== 'string' || !threadId.trim()) {
-    throw createError({ statusCode: 400, message: 'Request body must include thread_id.' })
-  }
-  if (!message) {
-    throw createError({ statusCode: 400, message: 'Request body must include message (non-empty string).' })
-  }
+  const body = await readValidatedBody(event, z.object({
+    thread_id: z.string().min(1, 'Request body must include thread_id.'),
+    message: z.string().min(1, 'Request body must include message (non-empty string).'),
+  }).parse)
 
   try {
-    return await agentManager.invokeAgent(id, threadId.trim(), message)
+    return await agentManager.invokeAgent(id, body.thread_id.trim(), body.message.trim())
   } catch (err) {
     throwAgentError(err)
   }

@@ -1,15 +1,13 @@
-export default defineEventHandler((event) => {
-  const agentId = getRouterParam(event, 'id')
-  const toolId = getRouterParam(event, 'toolId')
-  if (!agentId || !/^[a-z0-9_-]+$/i.test(agentId)) {
-    throw createError({ statusCode: 400, message: 'Invalid agent id' })
-  }
-  if (!toolId || !/^[a-z0-9_-]+$/i.test(toolId)) {
-    throw createError({ statusCode: 400, message: 'Invalid tool id' })
-  }
+import { z } from 'zod'
+
+export default defineEventHandler(async (event) => {
+  const { id, toolId } = await getValidatedRouterParams(event, z.object({
+    id: slugSchema,
+    toolId: slugSchema,
+  }).parse)
 
   try {
-    toolManager.deleteForAgent(agentId, toolId)
+    toolManager.deleteForAgent(id, toolId)
     return { ok: true }
   } catch (err) {
     throwAgentError(err)
