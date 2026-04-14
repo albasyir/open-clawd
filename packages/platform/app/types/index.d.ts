@@ -89,6 +89,8 @@ export interface ChatMessage {
   role: ChatMessageRole
   content: string
   thinking?: string
+  thinkingState?: 'working' | 'done'
+  thinkingDurationMs?: number
   date: string
   timeline?: ChatTimelineItem[]
   streamState?: 'working' | 'done' | 'error'

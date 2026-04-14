@@ -75,8 +75,25 @@ function toggleThinking(messageId: string) {
   }
 }
 
+function formatThinkingDuration(durationMs?: number) {
+  if (durationMs == null) return null
+
+  const seconds = durationMs / 1000
+  const roundedSeconds = seconds >= 10
+    ? Math.round(seconds)
+    : Math.round(seconds * 10) / 10
+  const label = Number.isInteger(roundedSeconds) ? roundedSeconds.toString() : roundedSeconds.toFixed(1)
+
+  return `${label} second${roundedSeconds === 1 ? '' : 's'}`
+}
+
 function getThinkingLabel(message: ChatMessage) {
-  return message.streamState === 'working' ? 'Thinking' : 'Thought'
+  if (message.thinkingState === 'done') {
+    const duration = formatThinkingDuration(message.thinkingDurationMs)
+    return duration ? `Thought for ${duration}` : 'Thought'
+  }
+
+  return 'Thinking'
 }
 
 function shouldRenderBubble(message: ChatMessage) {
@@ -119,7 +136,19 @@ defineExpose({
     :default-size="75"
     :min-size="50"
   >
-    <UDashboardNavbar :title="conversation.agent.name" :toggle="false">
+    <UDashboardNavbar :toggle="false">
+      <template #title>
+        <UAvatar
+          v-bind="conversation.agent.avatar"
+          :alt="conversation.agent.name"
+          size="xl"
+        />
+        <div class="min-w-0">
+          <p class="font-semibold text-highlighted">
+            {{ conversation.agent.name }}
+          </p>
+        </div>
+      </template>
       <template #leading>
         <UButton
           icon="i-lucide-x"
@@ -156,22 +185,6 @@ defineExpose({
         </UTooltip>
       </template>
     </UDashboardNavbar>
-
-    <div class="flex items-center gap-4 p-4 sm:px-6 border-b border-default shrink-0">
-      <UAvatar
-        v-bind="conversation.agent.avatar"
-        :alt="conversation.agent.name"
-        size="xl"
-      />
-      <div class="min-w-0">
-        <p class="font-semibold text-highlighted">
-          {{ conversation.agent.name }}
-        </p>
-        <p class="text-muted text-sm">
-          Agent · Chat
-        </p>
-      </div>
-    </div>
 
     <div class="flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-4 min-h-0">
       <div
@@ -295,7 +308,6 @@ defineExpose({
             autoresize
             placeholder="Type your message..."
             :rows="2"
-            :disabled="loading"
             class="w-full"
             :ui="{ base: 'p-0 resize-none' }"
             @keydown.enter.exact.prevent="onSubmit"
@@ -316,6 +328,19 @@ defineExpose({
 
   <div v-else class="flex h-full w-full min-h-0 min-w-0 flex-col">
     <UDashboardNavbar :title="conversation.agent.name" :toggle="false">
+      <template #title>
+        <UAvatar
+          v-bind="conversation.agent.avatar"
+          :alt="conversation.agent.name"
+          size="xl"
+        />
+        <div class="min-w-0">
+          <p class="font-semibold text-highlighted">
+            {{ conversation.agent.name }}
+          </p>
+        </div>
+      </template>
+
       <template #leading>
         <UButton
           icon="i-lucide-x"
@@ -352,17 +377,7 @@ defineExpose({
         </UTooltip>
       </template>
     </UDashboardNavbar>
-    <div class="flex items-center gap-4 border-b border-default shrink-0 p-4 sm:px-6">
-      <UAvatar v-bind="conversation.agent.avatar" :alt="conversation.agent.name" size="xl" />
-      <div class="min-w-0">
-        <p class="font-semibold text-highlighted">
-          {{ conversation.agent.name }}
-        </p>
-        <p class="text-muted text-sm">
-          Agent · Chat
-        </p>
-      </div>
-    </div>
+
     <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 flex flex-col gap-4">
       <div
         v-for="msg in conversation.messages"

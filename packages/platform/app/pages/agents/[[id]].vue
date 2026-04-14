@@ -134,18 +134,20 @@ function appendTimelineDetail(current: string, label: string, data?: unknown): s
 async function onSend(message: string) {
   const conversation = selectedConversation.value
   if (!conversation) return
+  const conversationId = conversation.id
+  const agentName = conversation.agent.name
 
   const userMsg: ChatMessage = {
-    id: `${conversation.id}-u-${Date.now()}`,
+    id: `${conversationId}-u-${Date.now()}`,
     role: 'user',
     content: message,
     date: new Date().toISOString()
   }
-  updateConversationMessages(conversation.id, messages => [...messages, userMsg])
+  updateConversationMessages(conversationId, messages => [...messages, userMsg])
 
   sendLoading.value = true
-  const initialAgentMessageId = `${conversation.id}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  updateConversationMessages(conversation.id, messages => [
+  const initialAgentMessageId = `${conversationId}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  updateConversationMessages(conversationId, messages => [
     ...messages,
     {
       id: initialAgentMessageId,
@@ -159,7 +161,52 @@ async function onSend(message: string) {
   let currentTextMessageId: string | null = initialAgentMessageId
   let currentTextContent = ''
   let currentTextThinking = ''
+  let currentThinkingState: ChatMessage['thinkingState']
+  let currentThinkingStartedAt: number | null = null
+  let currentThinkingDurationMs: number | undefined
   let currentToolMessageId: string | null = null
+  let currentToolTimeline: ChatTimelineItem[] = []
+  let currentToolTimelineIndexByKey = new Map<string, number>()
+  let activeToolKeys: string[] = []
+
+  function appendAgentMessage(message: ChatMessage): string {
+    updateConversationMessages(conversationId, messages => [...messages, message])
+    return message.id
+  }
+
+  function updateAgentMessage(
+    messageId: string,
+    updater: (message: ChatMessage) => ChatMessage,
+  ) {
+    updateConversationMessages(conversationId, messages =>
+      messages.map(msg => msg.id === messageId ? updater(msg) : msg)
+    )
+  }
+
+  function syncCurrentToolMessage(streamState: ChatMessage['streamState']) {
+    if (!currentToolMessageId) return
+
+    updateAgentMessage(currentToolMessageId, message => ({
+      ...message,
+      timeline: [...currentToolTimeline],
+      streamState
+    }))
+  }
+
+  function completeThinking() {
+    if (!currentTextMessageId || !currentTextThinking || currentThinkingState === 'done') return
+
+    const durationMs = Math.max(0, Date.now() - (currentThinkingStartedAt ?? Date.now()))
+    currentThinkingState = 'done'
+    currentThinkingDurationMs = durationMs
+
+    updateAgentMessage(currentTextMessageId, message => ({
+      ...message,
+      thinking: currentTextThinking,
+      thinkingState: 'done',
+      thinkingDurationMs: durationMs
+    }))
+  }
   try {
     const response = await fetch(`/api/agents/${conversation.agentId}/chat`, {
       method: 'POST',
@@ -177,41 +224,29 @@ async function onSend(message: string) {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let currentToolTimeline: ChatTimelineItem[] = []
-    let currentToolTimelineIndexByKey = new Map<string, number>()
-    let activeToolKeys: string[] = []
-
-    function appendAgentMessage(message: ChatMessage): string {
-      updateConversationMessages(conversation.id, messages => [...messages, message])
-      return message.id
-    }
-
-    function updateAgentMessage(
-      messageId: string,
-      updater: (message: ChatMessage) => ChatMessage,
-    ) {
-      updateConversationMessages(conversation.id, messages =>
-        messages.map(msg => msg.id === messageId ? updater(msg) : msg)
-      )
-    }
 
     function createAgentTextMessage(initialContent = '', streamState: ChatMessage['streamState'] = 'working'): string {
-      const id = `${conversation.id}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const id = `${conversationId}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       currentTextMessageId = appendAgentMessage({
         id,
         role: 'agent',
         content: initialContent,
         thinking: '',
+        thinkingState: undefined,
+        thinkingDurationMs: undefined,
         date: new Date().toISOString(),
         streamState
       })
       currentTextContent = initialContent
       currentTextThinking = ''
+      currentThinkingState = undefined
+      currentThinkingStartedAt = null
+      currentThinkingDurationMs = undefined
       return currentTextMessageId
     }
 
     function createAgentToolMessage(streamState: ChatMessage['streamState'] = 'working'): string {
-      const id = `${conversation.id}-a-tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const id = `${conversationId}-a-tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       currentToolMessageId = appendAgentMessage({
         id,
         role: 'agent',
@@ -230,6 +265,9 @@ async function onSend(message: string) {
       currentTextMessageId = null
       currentTextContent = ''
       currentTextThinking = ''
+      currentThinkingState = undefined
+      currentThinkingStartedAt = null
+      currentThinkingDurationMs = undefined
     }
 
     function resetToolSegment() {
@@ -295,41 +333,39 @@ async function onSend(message: string) {
       return activeToolKeys.at(-1) ?? null
     }
 
-    function syncCurrentToolMessage(streamState: ChatMessage['streamState']) {
-      if (!currentToolMessageId) return
-
-      updateAgentMessage(currentToolMessageId, message => ({
-        ...message,
-        timeline: [...currentToolTimeline],
-        streamState
-      }))
-    }
-
     const handleStreamChunk = (chunk: ChatStreamChunk) => {
       if (chunk.type === 'thinking') {
         const messageId = enterTextSegment('working')
+        if (!currentThinkingStartedAt) currentThinkingStartedAt = Date.now()
         currentTextThinking += chunk.delta
+        currentThinkingState = 'working'
         updateAgentMessage(messageId, message => ({
           ...message,
           thinking: currentTextThinking,
+          thinkingState: 'working',
+          thinkingDurationMs: undefined,
           streamState: 'working'
         }))
         return
       }
 
       if (chunk.type === 'message') {
+        completeThinking()
         const messageId = enterTextSegment('working')
         currentTextContent += chunk.delta
         updateAgentMessage(messageId, message => ({
           ...message,
           content: currentTextContent,
           thinking: currentTextThinking,
+          thinkingState: currentThinkingState,
+          thinkingDurationMs: currentThinkingDurationMs,
           streamState: 'working'
         }))
         return
       }
 
       if (chunk.type === 'tool') {
+        completeThinking()
         enterToolSegment('working')
         const event = chunk.event
         const key = event.toolCallId ?? `${event.name}-${currentToolTimeline.length}`
@@ -400,6 +436,7 @@ async function onSend(message: string) {
       }
 
       if (chunk.type === 'progress') {
+        completeThinking()
         if (!currentToolMessageId) return
 
         const activeKey = getActiveToolKey()
@@ -418,6 +455,7 @@ async function onSend(message: string) {
       }
 
       if (chunk.type === 'result') {
+        completeThinking()
         const reply = chunk.reply || currentTextContent || '(No response)'
         const messageId = enterTextSegment('done')
         currentTextContent = reply
@@ -425,6 +463,8 @@ async function onSend(message: string) {
           ...message,
           content: reply,
           thinking: currentTextThinking,
+          thinkingState: currentThinkingState,
+          thinkingDurationMs: currentThinkingDurationMs,
           streamState: 'done'
         }))
         return
@@ -453,7 +493,7 @@ async function onSend(message: string) {
       handleStreamChunk(JSON.parse(trailing) as ChatStreamChunk)
     }
   } catch (e: any) {
-    const errMsg = e?.data?.message || e?.data?.data?.message || e?.message || `Failed to get response from ${conversation.agent.name}`
+    const errMsg = e?.data?.message || e?.data?.data?.message || e?.message || `Failed to get response from ${agentName}`
     toast.add({
       title: 'Error',
       description: errMsg,
@@ -465,17 +505,25 @@ async function onSend(message: string) {
       syncCurrentToolMessage('error')
     }
     else if (currentTextMessageId && !currentTextContent) {
-      updateConversationMessages(conversation.id, messages =>
+      completeThinking()
+      updateConversationMessages(conversationId, messages =>
         messages.map(msg => msg.id === currentTextMessageId
-          ? { ...msg, content: `Error: ${errMsg}`, thinking: currentTextThinking, streamState: 'error' }
+          ? {
+              ...msg,
+              content: `Error: ${errMsg}`,
+              thinking: currentTextThinking,
+              thinkingState: currentThinkingState,
+              thinkingDurationMs: currentThinkingDurationMs,
+              streamState: 'error'
+            }
           : msg
         )
       )
     } else {
-      updateConversationMessages(conversation.id, messages => [
+      updateConversationMessages(conversationId, messages => [
         ...messages,
         {
-          id: `${conversation.id}-a-error-${Date.now()}`,
+          id: `${conversationId}-a-error-${Date.now()}`,
           role: 'agent',
           content: `Error: ${errMsg}`,
           date: new Date().toISOString(),
