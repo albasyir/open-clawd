@@ -377,7 +377,9 @@ async function onSend(message: string) {
             date: existing?.date ?? new Date().toISOString(),
             title: event.name,
             description: appendTimelineDetail(existing?.description ?? '', '[start]', event.input),
-            icon: 'i-lucide-loader-circle'
+            icon: 'i-lucide-loader-circle',
+            toolState: 'working',
+            durationMs: undefined
           }))
           activeToolKeys.push(key)
           syncCurrentToolMessage('working')
@@ -394,7 +396,9 @@ async function onSend(message: string) {
             date: existing?.date ?? new Date().toISOString(),
             title: existing?.title ?? event.name,
             description: appendTimelineDetail(existing?.description ?? '', '[progress]', event.data),
-            icon: 'i-lucide-loader-circle'
+            icon: 'i-lucide-loader-circle',
+            toolState: existing?.toolState ?? 'working',
+            durationMs: existing?.durationMs
           }))
           syncCurrentToolMessage('working')
           return
@@ -410,7 +414,9 @@ async function onSend(message: string) {
             date: existing?.date ?? new Date().toISOString(),
             title: existing?.title ?? event.name,
             description: appendTimelineDetail(existing?.description ?? '', '[done]', event.output),
-            icon: 'i-lucide-circle-check'
+            icon: 'i-lucide-circle-check',
+            toolState: 'done',
+            durationMs: existing ? Math.max(0, Date.now() - new Date(existing.date).getTime()) : undefined
           }))
 
           const activeIndex = activeToolKeys.lastIndexOf(activeKey)
@@ -426,7 +432,9 @@ async function onSend(message: string) {
           date: existing?.date ?? new Date().toISOString(),
           title: existing?.title ?? event.name,
           description: appendTimelineDetail(existing?.description ?? '', '[error]', event.error),
-          icon: 'i-lucide-circle-alert'
+          icon: 'i-lucide-circle-alert',
+          toolState: 'error',
+          durationMs: existing ? Math.max(0, Date.now() - new Date(existing.date).getTime()) : undefined
         }))
 
         const activeIndex = activeToolKeys.lastIndexOf(activeKey)
@@ -448,7 +456,9 @@ async function onSend(message: string) {
           date: existing?.date ?? new Date().toISOString(),
           title: existing?.title ?? 'Tool',
           description: appendTimelineDetail(existing?.description ?? '', '[progress]', chunk.data),
-          icon: existing?.icon ?? 'i-lucide-loader-circle'
+          icon: existing?.icon ?? 'i-lucide-loader-circle',
+          toolState: existing?.toolState ?? 'working',
+          durationMs: existing?.durationMs
         }))
         syncCurrentToolMessage('working')
         return

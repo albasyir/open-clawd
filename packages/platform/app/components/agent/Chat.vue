@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { format } from 'date-fns'
-import type { AgentConversation, ChatMessage } from '~/types'
+import type { AgentConversation, ChatMessage, ChatTimelineItem } from '~/types'
 
 const props = withDefaults(
   defineProps<{
@@ -24,26 +24,10 @@ const message = ref('')
 const localSending = ref(false)
 const filesSlideoverOpen = ref(false)
 const toolsSlideoverOpen = ref(false)
-const timelineSelections = ref<Record<string, string | number | undefined>>({})
 const thinkingOpen = ref<Record<string, boolean>>({})
+const toolCallOpen = ref<Record<string, boolean>>({})
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
-
-function setTimelineSelection(messageId: string, value: string | number | undefined) {
-  timelineSelections.value = {
-    ...timelineSelections.value,
-    [messageId]: value
-  }
-}
-
-function onTimelineSelect(messageId: string, value: string | number | undefined) {
-  const currentValue = timelineSelections.value[messageId]
-  setTimelineSelection(messageId, currentValue === value ? undefined : value)
-}
-
-function isTimelineSelected(messageId: string, value: string | number | undefined) {
-  return timelineSelections.value[messageId] === value
-}
 
 function formatTimelineDate(date: string) {
   return format(new Date(date), 'HH:mm:ss')
@@ -75,7 +59,23 @@ function toggleThinking(messageId: string) {
   }
 }
 
-function formatThinkingDuration(durationMs?: number) {
+function getToolCallKey(messageId: string, itemValue: string) {
+  return `${messageId}:${itemValue}`
+}
+
+function isToolCallOpen(messageId: string, itemValue: string) {
+  return !!toolCallOpen.value[getToolCallKey(messageId, itemValue)]
+}
+
+function toggleToolCall(messageId: string, itemValue: string) {
+  const key = getToolCallKey(messageId, itemValue)
+  toolCallOpen.value = {
+    ...toolCallOpen.value,
+    [key]: !toolCallOpen.value[key]
+  }
+}
+
+function formatDuration(durationMs?: number) {
   if (durationMs == null) return null
 
   const seconds = durationMs / 1000
@@ -89,11 +89,35 @@ function formatThinkingDuration(durationMs?: number) {
 
 function getThinkingLabel(message: ChatMessage) {
   if (message.thinkingState === 'done') {
-    const duration = formatThinkingDuration(message.thinkingDurationMs)
+    const duration = formatDuration(message.thinkingDurationMs)
     return duration ? `Thought for ${duration}` : 'Thought'
   }
 
   return 'Thinking'
+}
+
+function getToolCallLabel(item: ChatTimelineItem) {
+  if (item.toolState === 'done') {
+    const duration = formatDuration(item.durationMs)
+    return duration ? `${item.title} executed for ${duration}` : `${item.title} executed`
+  }
+
+  if (item.toolState === 'error') {
+    const duration = formatDuration(item.durationMs)
+    return duration ? `${item.title} failed after ${duration}` : `${item.title} failed`
+  }
+
+  return `Executing ${item.title}`
+}
+
+function getToolCallIcon(item: ChatTimelineItem) {
+  return 'i-lucide-wrench'
+}
+
+function getToolCallIconClass(item: ChatTimelineItem) {
+  if (item.toolState === 'done') return 'text-primary/80'
+  if (item.toolState === 'error') return 'text-error/80'
+  return 'animate-pulse text-primary/80'
 }
 
 function shouldRenderBubble(message: ChatMessage) {
@@ -209,38 +233,44 @@ defineExpose({
         <div
           class="max-w-[85%] min-w-0"
         >
-          <div
-            v-if="hasTimeline(msg)"
-            class="mb-2 rounded-xl border border-default bg-default/40 px-4 py-3"
-          >
-            <UTimeline
-              :items="msg.timeline || []"
-              size="xs"
-              color="neutral"
-              :model-value="timelineSelections[msg.id]"
-              @select="(_, item) => onTimelineSelect(msg.id, item.value)"
+          <div v-if="hasTimeline(msg)" class="mb-2 space-y-2">
+            <div
+              v-for="item in (msg.timeline || [])"
+              :key="`${msg.id}-${item.value}`"
+              class="rounded-lg border border-primary/15 bg-primary/5"
             >
-              <template
-                v-for="item in (msg.timeline || [])"
-                :key="`${msg.id}-${item.value}-date`"
-                #[`${item.slot}-date`]
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                @click="toggleToolCall(msg.id, String(item.value))"
               >
-                <span class="text-[11px] text-dimmed">
-                  {{ formatTimelineDate(item.date) }}
-                </span>
-              </template>
-              <template
-                v-for="item in (msg.timeline || [])"
-                :key="`${msg.id}-${item.value}-description`"
-                #[`${item.slot}-description`]
-              >
-                <div v-if="isTimelineSelected(msg.id, item.value)" class="rounded-md bg-default/50 p-2">
-                  <p class="whitespace-pre-wrap text-xs text-toned">
-                    {{ item.description }}
-                  </p>
+                <div class="flex min-w-0 items-center gap-2">
+                  <UIcon
+                    :name="getToolCallIcon(item)"
+                    class="size-4 shrink-0"
+                    :class="getToolCallIconClass(item)"
+                  />
+                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                    {{ getToolCallLabel(item) }}
+                  </span>
                 </div>
-              </template>
-            </UTimeline>
+                <div class="flex shrink-0 items-center gap-2">
+                  <span class="text-[11px] text-dimmed">
+                    {{ formatTimelineDate(item.date) }}
+                  </span>
+                  <UIcon
+                    name="i-lucide-chevron-down"
+                    class="size-4 text-primary/70 transition-transform"
+                    :class="isToolCallOpen(msg.id, String(item.value)) ? 'rotate-180' : ''"
+                  />
+                </div>
+              </button>
+              <div v-if="isToolCallOpen(msg.id, String(item.value))" class="border-t border-primary/10 px-3 py-2">
+                <p class="whitespace-pre-wrap text-xs text-toned">
+                  {{ item.description }}
+                </p>
+              </div>
+            </div>
           </div>
           <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
             <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
@@ -249,9 +279,12 @@ defineExpose({
                 class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
                 @click="toggleThinking(msg.id)"
               >
-                <span class="text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                  {{ getThinkingLabel(msg) }}
-                </span>
+                <div class="flex min-w-0 items-center gap-2">
+                  <UIcon name="i-lucide-brain" class="size-4 shrink-0 text-primary/80" />
+                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                    {{ getThinkingLabel(msg) }}
+                  </span>
+                </div>
                 <UIcon
                   name="i-lucide-chevron-down"
                   class="size-4 text-primary/70 transition-transform"
@@ -396,38 +429,44 @@ defineExpose({
           <UIcon name="i-lucide-user" class="size-4 text-primary" />
         </div>
         <div class="max-w-[85%] min-w-0">
-          <div
-            v-if="hasTimeline(msg)"
-            class="mb-2 rounded-xl border border-default bg-default/40 px-4 py-3"
-          >
-            <UTimeline
-              :items="msg.timeline || []"
-              size="xs"
-              color="neutral"
-              :model-value="timelineSelections[msg.id]"
-              @select="(_, item) => onTimelineSelect(msg.id, item.value)"
+          <div v-if="hasTimeline(msg)" class="mb-2 space-y-2">
+            <div
+              v-for="item in (msg.timeline || [])"
+              :key="`${msg.id}-${item.value}-mobile`"
+              class="rounded-lg border border-primary/15 bg-primary/5"
             >
-              <template
-                v-for="item in (msg.timeline || [])"
-                :key="`${msg.id}-${item.value}-mobile-date`"
-                #[`${item.slot}-date`]
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                @click="toggleToolCall(msg.id, String(item.value))"
               >
-                <span class="text-[11px] text-dimmed">
-                  {{ formatTimelineDate(item.date) }}
-                </span>
-              </template>
-              <template
-                v-for="item in (msg.timeline || [])"
-                :key="`${msg.id}-${item.value}-mobile-description`"
-                #[`${item.slot}-description`]
-              >
-                <div v-if="isTimelineSelected(msg.id, item.value)" class="rounded-md bg-default/50 p-2">
-                  <p class="whitespace-pre-wrap text-xs text-toned">
-                    {{ item.description }}
-                  </p>
+                <div class="flex min-w-0 items-center gap-2">
+                  <UIcon
+                    :name="getToolCallIcon(item)"
+                    class="size-4 shrink-0"
+                    :class="getToolCallIconClass(item)"
+                  />
+                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                    {{ getToolCallLabel(item) }}
+                  </span>
                 </div>
-              </template>
-            </UTimeline>
+                <div class="flex shrink-0 items-center gap-2">
+                  <span class="text-[11px] text-dimmed">
+                    {{ formatTimelineDate(item.date) }}
+                  </span>
+                  <UIcon
+                    name="i-lucide-chevron-down"
+                    class="size-4 text-primary/70 transition-transform"
+                    :class="isToolCallOpen(msg.id, String(item.value)) ? 'rotate-180' : ''"
+                  />
+                </div>
+              </button>
+              <div v-if="isToolCallOpen(msg.id, String(item.value))" class="border-t border-primary/10 px-3 py-2">
+                <p class="whitespace-pre-wrap text-xs text-toned">
+                  {{ item.description }}
+                </p>
+              </div>
+            </div>
           </div>
           <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
             <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
@@ -436,9 +475,12 @@ defineExpose({
                 class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
                 @click="toggleThinking(msg.id)"
               >
-                <span class="text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                  {{ getThinkingLabel(msg) }}
-                </span>
+                <div class="flex min-w-0 items-center gap-2">
+                  <UIcon name="i-lucide-brain" class="size-4 shrink-0 text-primary/80" />
+                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                    {{ getThinkingLabel(msg) }}
+                  </span>
+                </div>
                 <UIcon
                   name="i-lucide-chevron-down"
                   class="size-4 text-primary/70 transition-transform"

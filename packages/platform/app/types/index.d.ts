@@ -82,6 +82,8 @@ export interface ChatTimelineItem {
   title: string
   description: string
   icon?: string
+  toolState?: 'working' | 'done' | 'error'
+  durationMs?: number
 }
 
 export interface ChatMessage {
