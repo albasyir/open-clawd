@@ -32,6 +32,25 @@ function extractTextContent(content: unknown): string {
   return ''
 }
 
+function extractReasoningContent(message: unknown): string {
+  if (!message || typeof message !== 'object') return ''
+
+  const additionalKwargs = (message as { additional_kwargs?: { reasoning_content?: unknown } }).additional_kwargs
+  if (typeof additionalKwargs?.reasoning_content === 'string' && additionalKwargs.reasoning_content) {
+    return additionalKwargs.reasoning_content
+  }
+
+  const contentBlocks = (message as { contentBlocks?: Array<{ type?: string, reasoning?: unknown }> }).contentBlocks
+  if (Array.isArray(contentBlocks)) {
+    return contentBlocks
+      .filter(block => block?.type === 'reasoning' && typeof block.reasoning === 'string')
+      .map(block => block.reasoning as string)
+      .join('')
+  }
+
+  return ''
+}
+
 function extractReplyFromState(state: unknown): string {
   if (!state || typeof state !== 'object') return ''
 
@@ -164,6 +183,11 @@ export function createAgentManager() {
 
           const isAiChunk = AIMessageChunk.isInstance(messageChunk) || messageChunk.type === 'ai'
           if (!isAiChunk) continue
+
+          const reasoningDelta = extractReasoningContent(messageChunk)
+          if (reasoningDelta) {
+            writer({ type: 'thinking', delta: reasoningDelta })
+          }
 
           const delta = extractTextContent(messageChunk.content)
           if (!delta) continue

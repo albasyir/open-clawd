@@ -15,6 +15,7 @@ type ChatToolStreamEvent = {
 
 type ChatStreamChunk
   = { type: 'message', delta: string }
+    | { type: 'thinking', delta: string }
     | { type: 'tool', event: ChatToolStreamEvent }
     | { type: 'progress', data: unknown }
     | { type: 'result', reply: string }
@@ -143,6 +144,22 @@ async function onSend(message: string) {
   updateConversationMessages(conversation.id, messages => [...messages, userMsg])
 
   sendLoading.value = true
+  const initialAgentMessageId = `${conversation.id}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  updateConversationMessages(conversation.id, messages => [
+    ...messages,
+    {
+      id: initialAgentMessageId,
+      role: 'agent',
+      content: '',
+      date: new Date().toISOString(),
+      streamState: 'working'
+    }
+  ])
+
+  let currentTextMessageId: string | null = initialAgentMessageId
+  let currentTextContent = ''
+  let currentTextThinking = ''
+  let currentToolMessageId: string | null = null
   try {
     const response = await fetch(`/api/agents/${conversation.agentId}/chat`, {
       method: 'POST',
@@ -160,9 +177,6 @@ async function onSend(message: string) {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let currentTextMessageId: string | null = null
-    let currentTextContent = ''
-    let currentToolMessageId: string | null = null
     let currentToolTimeline: ChatTimelineItem[] = []
     let currentToolTimelineIndexByKey = new Map<string, number>()
     let activeToolKeys: string[] = []
@@ -187,10 +201,12 @@ async function onSend(message: string) {
         id,
         role: 'agent',
         content: initialContent,
+        thinking: '',
         date: new Date().toISOString(),
         streamState
       })
       currentTextContent = initialContent
+      currentTextThinking = ''
       return currentTextMessageId
     }
 
@@ -213,6 +229,7 @@ async function onSend(message: string) {
     function resetTextSegment() {
       currentTextMessageId = null
       currentTextContent = ''
+      currentTextThinking = ''
     }
 
     function resetToolSegment() {
@@ -241,6 +258,15 @@ async function onSend(message: string) {
 
     function enterToolSegment(streamState: ChatMessage['streamState'] = 'working'): string {
       if (currentTextMessageId) {
+        if (!currentTextContent && !currentTextThinking) {
+          currentToolMessageId = currentTextMessageId
+          currentTextMessageId = null
+          currentToolTimeline = []
+          currentToolTimelineIndexByKey = new Map()
+          activeToolKeys = []
+          return currentToolMessageId
+        }
+
         resetTextSegment()
       }
 
@@ -280,12 +306,24 @@ async function onSend(message: string) {
     }
 
     const handleStreamChunk = (chunk: ChatStreamChunk) => {
+      if (chunk.type === 'thinking') {
+        const messageId = enterTextSegment('working')
+        currentTextThinking += chunk.delta
+        updateAgentMessage(messageId, message => ({
+          ...message,
+          thinking: currentTextThinking,
+          streamState: 'working'
+        }))
+        return
+      }
+
       if (chunk.type === 'message') {
         const messageId = enterTextSegment('working')
         currentTextContent += chunk.delta
         updateAgentMessage(messageId, message => ({
           ...message,
           content: currentTextContent,
+          thinking: currentTextThinking,
           streamState: 'working'
         }))
         return
@@ -386,6 +424,7 @@ async function onSend(message: string) {
         updateAgentMessage(messageId, message => ({
           ...message,
           content: reply,
+          thinking: currentTextThinking,
           streamState: 'done'
         }))
         return
@@ -425,17 +464,25 @@ async function onSend(message: string) {
     if (currentToolMessageId) {
       syncCurrentToolMessage('error')
     }
-
-    updateConversationMessages(conversation.id, messages => [
-      ...messages,
-      {
-        id: `${conversation.id}-a-error-${Date.now()}`,
-        role: 'agent',
-        content: `Error: ${errMsg}`,
-        date: new Date().toISOString(),
-        streamState: 'error'
-      }
-    ])
+    else if (currentTextMessageId && !currentTextContent) {
+      updateConversationMessages(conversation.id, messages =>
+        messages.map(msg => msg.id === currentTextMessageId
+          ? { ...msg, content: `Error: ${errMsg}`, thinking: currentTextThinking, streamState: 'error' }
+          : msg
+        )
+      )
+    } else {
+      updateConversationMessages(conversation.id, messages => [
+        ...messages,
+        {
+          id: `${conversation.id}-a-error-${Date.now()}`,
+          role: 'agent',
+          content: `Error: ${errMsg}`,
+          date: new Date().toISOString(),
+          streamState: 'error'
+        }
+      ])
+    }
   } finally {
     sendLoading.value = false
   }

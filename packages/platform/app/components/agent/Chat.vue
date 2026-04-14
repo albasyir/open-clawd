@@ -25,6 +25,7 @@ const localSending = ref(false)
 const filesSlideoverOpen = ref(false)
 const toolsSlideoverOpen = ref(false)
 const timelineSelections = ref<Record<string, string | number | undefined>>({})
+const thinkingOpen = ref<Record<string, boolean>>({})
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
 
@@ -52,17 +53,38 @@ function shouldShowWorkingState(message: ChatMessage) {
   return message.role === 'agent'
     && message.streamState === 'working'
     && !message.content.trim()
-    && !(message.timeline?.length)
+    && !message.thinking?.trim()
 }
 
 function hasTimeline(message: ChatMessage) {
   return message.role === 'agent' && !!message.timeline?.length
 }
 
-function shouldRenderBubble(message: ChatMessage) {
-  if (message.role === 'user') return true
+function hasThinking(message: ChatMessage) {
+  return message.role === 'agent' && !!message.thinking?.trim()
+}
 
-  return !!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message)
+function isThinkingOpen(messageId: string) {
+  return !!thinkingOpen.value[messageId]
+}
+
+function toggleThinking(messageId: string) {
+  thinkingOpen.value = {
+    ...thinkingOpen.value,
+    [messageId]: !thinkingOpen.value[messageId]
+  }
+}
+
+function getThinkingLabel(message: ChatMessage) {
+  return message.streamState === 'working' ? 'Thinking' : 'Thought'
+}
+
+function shouldRenderBubble(message: ChatMessage) {
+  return message.role === 'user'
+}
+
+function shouldRenderAgentContent(message: ChatMessage) {
+  return message.role === 'agent' && (!!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message))
 }
 
 function onSubmit() {
@@ -207,6 +229,40 @@ defineExpose({
               </template>
             </UTimeline>
           </div>
+          <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
+            <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                @click="toggleThinking(msg.id)"
+              >
+                <span class="text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                  {{ getThinkingLabel(msg) }}
+                </span>
+                <UIcon
+                  name="i-lucide-chevron-down"
+                  class="size-4 text-primary/70 transition-transform"
+                  :class="isThinkingOpen(msg.id) ? 'rotate-180' : ''"
+                />
+              </button>
+              <div v-if="isThinkingOpen(msg.id)" class="border-t border-primary/10 px-3 py-2">
+                <p class="whitespace-pre-wrap text-xs text-toned">
+                  {{ msg.thinking }}
+                </p>
+              </div>
+            </div>
+            <p v-if="msg.content" class="whitespace-pre-wrap text-sm text-toned">
+              {{ msg.content }}
+            </p>
+            <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
+              <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
+              <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />
+              <USkeleton class="h-3.5 w-36 rounded-full bg-primary/15 ring-1 ring-primary/10" />
+            </div>
+            <p v-if="!shouldShowWorkingState(msg)" class="mt-1 text-xs text-dimmed">
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
+          </div>
           <div
             v-if="shouldRenderBubble(msg)"
             class="rounded-2xl px-4 py-2.5"
@@ -214,16 +270,10 @@ defineExpose({
               ? 'bg-primary text-primary-foreground rounded-tr-sm'
               : 'bg-elevated rounded-tl-sm'"
           >
-            <p v-if="msg.content" class="whitespace-pre-wrap text-sm">
+            <p class="whitespace-pre-wrap text-sm">
               {{ msg.content }}
             </p>
-            <p v-else-if="shouldShowWorkingState(msg)" class="text-sm text-dimmed">
-              Working...
-            </p>
-            <p
-              class="text-xs mt-1"
-              :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'"
-            >
+            <p class="text-xs mt-1 text-primary-foreground/80">
               {{ format(new Date(msg.date), 'HH:mm') }}
             </p>
           </div>
@@ -364,18 +414,49 @@ defineExpose({
               </template>
             </UTimeline>
           </div>
+          <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
+            <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                @click="toggleThinking(msg.id)"
+              >
+                <span class="text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
+                  {{ getThinkingLabel(msg) }}
+                </span>
+                <UIcon
+                  name="i-lucide-chevron-down"
+                  class="size-4 text-primary/70 transition-transform"
+                  :class="isThinkingOpen(msg.id) ? 'rotate-180' : ''"
+                />
+              </button>
+              <div v-if="isThinkingOpen(msg.id)" class="border-t border-primary/10 px-3 py-2">
+                <p class="whitespace-pre-wrap text-xs text-toned">
+                  {{ msg.thinking }}
+                </p>
+              </div>
+            </div>
+            <p v-if="msg.content" class="whitespace-pre-wrap text-sm text-toned">
+              {{ msg.content }}
+            </p>
+            <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
+              <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
+              <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />
+              <USkeleton class="h-3.5 w-36 rounded-full bg-primary/15 ring-1 ring-primary/10" />
+            </div>
+            <p v-if="!shouldShowWorkingState(msg)" class="mt-1 text-xs text-dimmed">
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
+          </div>
           <div
             v-if="shouldRenderBubble(msg)"
             class="rounded-2xl px-4 py-2.5"
             :class="msg.role === 'user' ? 'rounded-tr-sm bg-primary text-primary-foreground' : 'rounded-tl-sm bg-elevated'"
           >
-            <p v-if="msg.content" class="whitespace-pre-wrap text-sm">
+            <p class="whitespace-pre-wrap text-sm">
               {{ msg.content }}
             </p>
-            <p v-else-if="shouldShowWorkingState(msg)" class="text-sm text-dimmed">
-              Working...
-            </p>
-            <p class="mt-1 text-xs" :class="msg.role === 'user' ? 'text-primary-foreground/80' : 'text-dimmed'">
+            <p class="mt-1 text-xs text-primary-foreground/80">
               {{ format(new Date(msg.date), 'HH:mm') }}
             </p>
           </div>
