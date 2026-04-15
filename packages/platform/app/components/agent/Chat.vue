@@ -110,7 +110,7 @@ function getToolCallLabel(item: ChatTimelineItem) {
   return `Executing ${item.title}`
 }
 
-function getToolCallIcon(item: ChatTimelineItem) {
+function getToolCallIcon(_item: ChatTimelineItem) {
   return 'i-lucide-wrench'
 }
 
@@ -297,9 +297,7 @@ defineExpose({
                 </p>
               </div>
             </div>
-            <p v-if="msg.content" class="whitespace-pre-wrap text-sm text-toned">
-              {{ msg.content }}
-            </p>
+            <AgentChatMarkdown v-if="msg.content" :content="msg.content" />
             <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
               <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />
@@ -493,9 +491,7 @@ defineExpose({
                 </p>
               </div>
             </div>
-            <p v-if="msg.content" class="whitespace-pre-wrap text-sm text-toned">
-              {{ msg.content }}
-            </p>
+            <AgentChatMarkdown v-if="msg.content" :content="msg.content" />
             <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
               <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />

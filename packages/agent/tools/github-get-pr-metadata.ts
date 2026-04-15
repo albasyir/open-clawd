@@ -41,7 +41,7 @@ export const githubPullRequestMetadataTool = tool(
   {
     name: 'github_pull_request_metadata',
     description:
-      'Get GitHub pull request metadata by owner, repo, and pull_number.',
+      'Get GitHub pull request metadata by owner, repo, and pull_number. when you have PR URL you can extract using `github_pull_request_url_extractor` tool.',
     schema: githubPullRequestMetadataSchema,
   },
 )
