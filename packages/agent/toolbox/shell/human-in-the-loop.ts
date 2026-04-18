@@ -1,8 +1,8 @@
 import type { ToolCall } from "@langchain/core/messages"
 import { shellTool } from "./tool"
-import { HumanInTheLoopMiddlewareConfig } from "langchain"
+import { Toolbox } from "../../types";
 
-export const shellApprovalHumanInTheLoop: HumanInTheLoopMiddlewareConfig['interruptOn'] = {
+export const shellHumanInTheLoop: Toolbox['humanInTheLoop'] = {
     [shellTool.name]: {
         allowedDecisions: ['approve', 'edit', 'reject'],
         description(toolCall: ToolCall): string {

@@ -6,30 +6,24 @@ import {
 
 import model from './model'
 import memory from './memory'
-import tool from './tool'
+import tools from './tool'
 import identity from './identity'
+import { Toolbox } from '../../types'
 
 const agent = createAgent({
   name: identity.name,
   model: model,
-  tools: tool,
+  tools: tools.map(({ tool }) => tool),
   checkpointer: memory,
   middleware: [
     humanInTheLoopMiddleware({
       interruptOn: {
-        shell_exec: {
-          allowedDecisions: ['approve', 'edit', 'reject'],
-          description: (toolCall) => {
-            const command = typeof toolCall.args?.command === 'string'
-              ? toolCall.args.command
-              : JSON.stringify(toolCall.args)
-            const cwd = typeof toolCall.args?.cwd === 'string'
-              ? `\nWorking directory: ${toolCall.args.cwd}`
-              : ''
-
-            return `Command: ${command}${cwd}`
-          },
-        },
+        ...tools.reduce((acc, { humanInTheLoop }) => {
+          if (humanInTheLoop) {
+            acc = Object.assign(acc, humanInTheLoop)
+          }
+          return acc
+        }, {} satisfies Toolbox['humanInTheLoop'])
       },
     }),
     summarizationMiddleware({

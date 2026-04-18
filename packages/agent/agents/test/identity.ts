@@ -1,4 +1,4 @@
 export default {
-  name: 'Miley',
+  name: 'Aleasha',
   owner: 'Abdul Aziz Al Basyir',
 }

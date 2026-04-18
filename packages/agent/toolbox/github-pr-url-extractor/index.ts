@@ -1,5 +1,5 @@
-import githubGetPrMetadata from "../github-get-pr-metadata";
+import { githubPullRequestUrlExtractorTool } from "./tool";
 
 export default {
-    tool: githubGetPrMetadata,
+    tool: githubPullRequestUrlExtractorTool
 }

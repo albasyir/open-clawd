@@ -1,3 +1,5 @@
+import { DynamicStructuredTool, HumanInTheLoopMiddlewareConfig, Tool } from "langchain"
+
 export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT'
 
 export class AgentError extends Error {
@@ -45,4 +47,9 @@ export interface TestResult {
   success: boolean
   result?: unknown
   error?: string
+}
+
+export interface Toolbox {
+  tool: DynamicStructuredTool
+  humanInTheLoop?: HumanInTheLoopMiddlewareConfig['interruptOn']
 }
