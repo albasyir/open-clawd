@@ -281,8 +281,12 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
     }))
   }
 
+  function hasCurrentTextSegmentContent() {
+    return !!currentTextContent.trim() || !!currentTextThinking.trim()
+  }
+
   function completeThinking() {
-    if (!currentTextMessageId || !currentTextThinking || currentThinkingState === 'done') return
+    if (!currentTextMessageId || !currentTextThinking.trim() || currentThinkingState === 'done') return
 
     const durationMs = Math.max(0, Date.now() - (currentThinkingStartedAt ?? Date.now()))
     currentThinkingState = 'done'
@@ -366,6 +370,26 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
       activeToolKeys = []
     }
 
+    function finishTextSegment(streamState: ChatMessage['streamState'] = 'done') {
+      if (!currentTextMessageId) return
+
+      if (!hasCurrentTextSegmentContent()) {
+        removeAgentMessage(currentTextMessageId)
+        resetTextSegment()
+        return
+      }
+
+      updateAgentMessage(currentTextMessageId, message => ({
+        ...message,
+        content: currentTextContent,
+        thinking: currentTextThinking,
+        thinkingState: currentThinkingState,
+        thinkingDurationMs: currentThinkingDurationMs,
+        streamState
+      }))
+      resetTextSegment()
+    }
+
     function finishToolSegment(streamState: ChatMessage['streamState']) {
       syncCurrentToolMessage(streamState)
       resetToolSegment()
@@ -405,8 +429,17 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
 
     function enterToolSegment(streamState: ChatMessage['streamState'] = 'working'): string {
       if (currentTextMessageId) {
-        if (!currentTextContent && !currentTextThinking) {
+        if (!hasCurrentTextSegmentContent()) {
           currentToolMessageId = currentTextMessageId
+          updateAgentMessage(currentToolMessageId, message => ({
+            ...message,
+            content: '',
+            thinking: '',
+            thinkingState: undefined,
+            thinkingDurationMs: undefined,
+            timeline: [],
+            streamState
+          }))
           currentTextMessageId = null
           currentToolTimeline = []
           currentToolTimelineIndexByKey = new Map()
@@ -414,7 +447,7 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
           return currentToolMessageId
         }
 
-        resetTextSegment()
+        finishTextSegment('done')
       }
 
       if (!currentToolMessageId) {
@@ -458,14 +491,19 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
         streamState: 'done'
       }
 
-      if (currentTextMessageId && !currentTextContent && !currentTextThinking) {
+      if (currentTextMessageId && !hasCurrentTextSegmentContent()) {
         updateAgentMessage(currentTextMessageId, message => ({
           ...message,
+          content: '',
+          thinking: '',
+          thinkingState: undefined,
+          thinkingDurationMs: undefined,
           pendingApproval,
           streamState: 'done'
         }))
         resetTextSegment()
       } else {
+        finishTextSegment('done')
         appendAgentMessage(approvalMessage)
       }
     }
@@ -542,8 +580,7 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
         }
 
         if (event.event === 'on_tool_end') {
-          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
-          if (!activeKey) return
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey() ?? key
 
           upsertTimelineItem(activeKey, (existing) => ({
             value: existing?.value ?? activeKey,
@@ -563,8 +600,7 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
         }
 
         if (event.event === 'on_tool_error' && isInterruptToolError(event.error)) {
-          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
-          if (!activeKey) return
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey() ?? key
 
           upsertTimelineItem(activeKey, existing => ({
             value: existing?.value ?? activeKey,
@@ -706,8 +742,19 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
       ])
     }
   } finally {
-    if (!streamFailed && currentTextMessageId && !currentTextContent && !currentTextThinking) {
-      removeAgentMessage(currentTextMessageId)
+    if (!streamFailed && currentTextMessageId) {
+      if (hasCurrentTextSegmentContent()) {
+        updateAgentMessage(currentTextMessageId, message => ({
+          ...message,
+          content: currentTextContent,
+          thinking: currentTextThinking,
+          thinkingState: currentThinkingState,
+          thinkingDurationMs: currentThinkingDurationMs,
+          streamState: 'done'
+        }))
+      } else {
+        removeAgentMessage(currentTextMessageId)
+      }
     }
     sendLoading.value = false
   }

@@ -47,9 +47,15 @@ const modelItems = [
   }
 ]
 
+function isLatestConversationMessage(message: ChatMessage) {
+  return props.conversation.messages.at(-1)?.id === message.id
+}
+
 function shouldShowWorkingState(message: ChatMessage) {
   return message.role === 'agent'
     && message.streamState === 'working'
+    && loading.value
+    && isLatestConversationMessage(message)
     && !hasTimeline(message)
     && !hasPendingApproval(message)
     && !message.content.trim()
@@ -143,7 +149,7 @@ function shouldRenderBubble(message: ChatMessage) {
 function shouldRenderAgentContent(message: ChatMessage) {
   return message.role === 'agent'
     && !hasPendingApproval(message)
-    && (!!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message))
+    && (!!message.content.trim() || hasThinking(message) || shouldShowWorkingState(message))
 }
 
 function shouldShowAgentTimestamp(message: ChatMessage) {
