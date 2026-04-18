@@ -1,7 +1,7 @@
 import {
   existsSync, mkdirSync,
   readdirSync, readFileSync,
-  unlinkSync, writeFileSync,
+  unlinkSync, rmSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -97,7 +97,7 @@ async function runToolTest(
 
 export function createToolManager() {
   const baseDir = resolveBaseDir()
-  const globalToolsDir = join(baseDir, 'tools')
+  const globalToolsDir = join(baseDir, 'toolbox')
 
 
   return {
@@ -105,13 +105,14 @@ export function createToolManager() {
 
     listGlobal(): ToolInfo[] {
       try {
-        return readdirSync(globalToolsDir)
-          .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+        const entries = readdirSync(globalToolsDir, { withFileTypes: true })
+        return entries
+          .filter((dirent) => dirent.isDirectory())
+          .map((dirent) => dirent.name)
           .sort()
-          .map((file) => {
-            const name = file.replace(/\.ts$/, '')
+          .map((name) => {
             let content: string | undefined
-            try { content = readFileSync(join(globalToolsDir, file), 'utf-8') } catch {}
+            try { content = readFileSync(join(globalToolsDir, name, 'tool.ts'), 'utf-8') } catch {}
             return { id: name, name, content }
           })
       } catch {
@@ -120,31 +121,34 @@ export function createToolManager() {
     },
 
     createGlobal(name: string): { id: string; name: string } {
-      const filePath = join(globalToolsDir, `${name}.ts`)
-      if (existsSync(filePath)) {
+      const dirPath = join(globalToolsDir, name)
+      if (existsSync(dirPath)) {
         throw new AgentError('ALREADY_EXISTS', `Tool "${name}" already exists`)
       }
-      mkdirSync(globalToolsDir, { recursive: true })
-      writeFileSync(filePath, NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
+      mkdirSync(dirPath, { recursive: true })
+      writeFileSync(join(dirPath, 'tool.ts'), NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
+      const camelName = name.replace(/-([a-z])/g, (g) => g[1].toUpperCase())
+      const indexContent = `import ${camelName} from "./tool";\n\nexport default {\n    tool: ${camelName},\n}\n`
+      writeFileSync(join(dirPath, 'index.ts'), indexContent, 'utf-8')
       return { id: name, name }
     },
 
     updateGlobal(id: string, content: string): void {
-      const filePath = join(globalToolsDir, `${id}.ts`)
+      const filePath = join(globalToolsDir, id, 'tool.ts')
       writeFileSync(filePath, content, 'utf-8')
     },
 
     deleteGlobal(id: string): void {
-      const filePath = join(globalToolsDir, `${id}.ts`)
-      if (!existsSync(filePath)) {
+      const dirPath = join(globalToolsDir, id)
+      if (!existsSync(dirPath)) {
         throw new AgentError('NOT_FOUND', `Global tool "${id}" not found`)
       }
-      unlinkSync(filePath)
+      rmSync(dirPath, { recursive: true, force: true })
     },
 
     async testGlobal(id: string, input: Record<string, unknown>): Promise<TestResult> {
-      const absolutePath = join(globalToolsDir, `${id}.ts`)
-      const label = `agent/tools/${id}.ts`
+      const absolutePath = join(globalToolsDir, id, 'tool.ts')
+      const label = `agent/toolbox/${id}/tool.ts`
       return runToolTest({ absolutePath, label, input, allowCallable: false })
     },
 
@@ -153,8 +157,8 @@ export function createToolManager() {
       input: Record<string, unknown>,
       writer: TestStreamWriter,
     ): Promise<void> {
-      const absolutePath = join(globalToolsDir, `${id}.ts`)
-      const label = `agent/tools/${id}.ts`
+      const absolutePath = join(globalToolsDir, id, 'tool.ts')
+      const label = `agent/toolbox/${id}/tool.ts`
       const result = await runToolTest({ absolutePath, label, input, allowCallable: false, writer })
       writer({ type: 'result', ...result })
     },
@@ -166,7 +170,7 @@ export function createToolManager() {
       if (!existsSync(toolFilePath)) return []
 
       const content = readFileSync(toolFilePath, 'utf-8')
-      const importPattern = /\(await import\(['"]\.\.\/\.\.\/tools\/([^'"]+)['"]\)\)\.default/g
+      const importPattern = /\(await import\(['"]\.\.\/\.\.\/toolbox\/([^'"]+)['"]\)\)\.default/g
       const linked: string[] = []
       let match: RegExpExecArray | null
       while ((match = importPattern.exec(content)) !== null) {
@@ -176,7 +180,7 @@ export function createToolManager() {
     },
 
     linkTool(agentId: string, toolName: string): void {
-      const globalPath = join(globalToolsDir, `${toolName}.ts`)
+      const globalPath = join(globalToolsDir, toolName)
       if (!existsSync(globalPath)) {
         throw new AgentError('NOT_FOUND', `Global tool "${toolName}" not found`)
       }
@@ -187,9 +191,9 @@ export function createToolManager() {
       }
 
       let content = readFileSync(toolFilePath, 'utf-8')
-      if (content.includes(`'../../tools/${toolName}'`)) return
+      if (content.includes(`'../../toolbox/${toolName}'`)) return
 
-      const newEntry = `    (await import('../../tools/${toolName}')).default`
+      const newEntry = `    (await import('../../toolbox/${toolName}')).default`
       const closingBracketIndex = content.lastIndexOf(']')
       if (closingBracketIndex === -1) return
 
@@ -210,7 +214,7 @@ export function createToolManager() {
 
       let content = readFileSync(toolFilePath, 'utf-8')
       const lines = content.split('\n')
-      const filtered = lines.filter((line) => !line.includes(`'../../tools/${toolName}'`))
+      const filtered = lines.filter((line) => !line.includes(`'../../toolbox/${toolName}'`))
       writeFileSync(toolFilePath, filtered.join('\n'), 'utf-8')
     },
 

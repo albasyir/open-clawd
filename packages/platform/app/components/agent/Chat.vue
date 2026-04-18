@@ -768,7 +768,7 @@ defineExpose({
     :initial-file-id="filesSlideoverInitialFile"
   />
 
-  <AgentToolsSlideover
+  <AgentToolboxSlideover
     v-model:open="toolsSlideoverOpen"
     :agent-id="conversation.id"
     :agent-name="conversation.agent.name"

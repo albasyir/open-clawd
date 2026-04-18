@@ -20,7 +20,7 @@ const open = computed({
   set: (v) => emit('update:open', v)
 })
 
-const toolsApiBase = computed(() => `/api/agents/${props.agentId}/tools`)
+const toolsApiBase = computed(() => `/api/agents/${props.agentId}/toolbox`)
 const tools = ref<AgentToolEntry[]>([])
 const loading = ref(false)
 const toggling = ref<Set<string>>(new Set())
@@ -86,7 +86,7 @@ const linkedCount = computed(() => tools.value.filter((t) => t.linked).length)
 <template>
   <USlideover
     v-model:open="open"
-    :title="`${agentName} – Tools`"
+    :title="`${agentName} – Toolbox`"
     :ui="{
       content: 'w-full max-w-md inset-y-0 right-0 h-full min-h-screen'
     }"
@@ -96,19 +96,19 @@ const linkedCount = computed(() => tools.value.filter((t) => t.linked).length)
         <div class="shrink-0 space-y-2 border-b border-default p-4">
           <div class="flex items-center justify-between">
             <div>
-              <span class="font-semibold text-highlighted">Connect Tools</span>
+              <span class="font-semibold text-highlighted">Connect Toolbox</span>
               <UBadge v-if="linkedCount > 0" :label="linkedCount" variant="subtle" class="ml-2" />
             </div>
             <UButton icon="i-lucide-x" color="neutral" variant="ghost" class="-my-1.5 -mr-1.5" @click="open = false" />
           </div>
-          <p class="text-sm text-dimmed">Toggle global tools on or off for this agent.</p>
+          <p class="text-sm text-dimmed">Toggle global toolbox on or off for this agent.</p>
           <UButton
             icon="i-lucide-external-link"
             color="neutral"
             variant="outline"
             size="sm"
-            label="Manage Global Tools"
-            to="/tools"
+            label="Manage Global Toolbox"
+            to="/toolbox"
             target="_blank"
             block
           />
@@ -121,8 +121,8 @@ const linkedCount = computed(() => tools.value.filter((t) => t.linked).length)
         <div v-else-if="tools.length === 0" class="flex flex-1 items-center justify-center p-6">
           <div class="text-center">
             <UIcon name="i-lucide-wrench" class="size-12 text-dimmed mb-3" />
-            <p class="text-sm text-dimmed">No global tools available.</p>
-            <p class="text-xs text-dimmed mt-1">Create tools from the global Tools page first.</p>
+            <p class="text-sm text-dimmed">No global toolbox available.</p>
+            <p class="text-xs text-dimmed mt-1">Create tools from the global Toolbox page first.</p>
           </div>
         </div>
 

@@ -12,7 +12,7 @@ const props = withDefaults(
   { toolsApiBase: '' }
 )
 
-const toolsBase = computed(() => (props.toolsApiBase || '/api/tools').replace(/\/$/, ''))
+const toolsBase = computed(() => (props.toolsApiBase || '/api/toolbox').replace(/\/$/, ''))
 const isSymlink = computed(() => !!props.tool.symlink)
 
 const emits = defineEmits<{
@@ -324,7 +324,7 @@ watch(testModalOpen, (isOpen) => {
 </script>
 
 <template>
-  <UDashboardPanel id="tools-detail">
+  <UDashboardPanel id="toolbox-detail">
     <UDashboardNavbar :title="tool.name" :toggle="false">
       <template #leading>
         <UButton
@@ -373,7 +373,7 @@ watch(testModalOpen, (isOpen) => {
             color="primary"
             variant="outline"
             label="Edit globally"
-            :to="`/tools/${tool.id}`"
+            :to="`/toolbox/${tool.id}`"
             icon="i-lucide-external-link"
           />
         </div>

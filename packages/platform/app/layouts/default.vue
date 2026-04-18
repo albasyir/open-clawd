@@ -22,9 +22,9 @@ const links = [[
     open.value = false
   }
 }, {
-  label: 'Tools',
+  label: 'Toolbox',
   icon: 'i-lucide-wrench',
-  to: '/tools',
+  to: '/toolbox',
   onSelect: () => {
     open.value = false
   }

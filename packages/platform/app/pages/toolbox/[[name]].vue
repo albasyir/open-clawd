@@ -6,11 +6,11 @@ import type { ToolFile } from '~/types'
 const route = useRoute()
 const router = useRouter()
 
-const { data: tools, refresh: refreshTools } = await useFetch<ToolFile[]>('/api/tools', { default: () => [] })
+const { data: tools, refresh: refreshTools } = await useFetch<ToolFile[]>('/api/toolbox', { default: () => [] })
 
 const selectedTool = ref<ToolFile | null>(null)
 
-/** Sync selected tool from route param (e.g. /tools/math). */
+/** Sync selected tool from route param (e.g. /toolbox/math). */
 function syncSelectionFromRoute() {
   const name = route.params.name
   if (typeof name !== 'string' || !name) {
@@ -31,10 +31,10 @@ watch(
 watch(selectedTool, (tool) => {
   if (tool) {
     if (route.params.name !== tool.id) {
-      void router.replace({ path: `/tools/${tool.id}` })
+      void router.replace({ path: `/toolbox/${tool.id}` })
     }
   } else if (route.params.name) {
-    void router.replace({ path: '/tools' })
+    void router.replace({ path: '/toolbox' })
   }
 }, { flush: 'post' })
 
@@ -81,7 +81,7 @@ async function createTool() {
   addToolError.value = ''
   addToolLoading.value = true
   try {
-    await $fetch<{ id: string; name: string }>('/api/tools', {
+    await $fetch<{ id: string; name: string }>('/api/toolbox', {
       method: 'POST',
       body: { name }
     })
@@ -89,7 +89,7 @@ async function createTool() {
     addToolModalOpen.value = false
     newToolName.value = ''
     toast.add({ title: 'Tool created', description: `${name}.ts`, color: 'success' })
-    await router.push(`/tools/${name}`)
+    await router.push(`/toolbox/${name}`)
   } catch (e: any) {
     const msg = e?.data?.message ?? e?.message ?? 'Failed to create tool'
     addToolError.value = msg
@@ -114,7 +114,7 @@ const removeLoading = ref(false)
 async function checkDeps(tool: ToolFile) {
   removeDepsStatus.value = 'checking'
   try {
-    const res = await $fetch<{ deps: { agentId: string; agentName: string }[] }>(`/api/tools/${tool.id}/deps`)
+    const res = await $fetch<{ deps: { agentId: string; agentName: string }[] }>(`/api/toolbox/${tool.id}/deps`)
     if (res.deps.length > 0) {
       removeDeps.value = res.deps
       removeDepsStatus.value = 'found'
@@ -144,11 +144,11 @@ async function confirmRemove() {
   if (!toolToRemove.value || removeDepsStatus.value !== 'safe') return
   removeLoading.value = true
   try {
-    await $fetch(`/api/tools/${toolToRemove.value.id}`, { method: 'DELETE' })
+    await $fetch(`/api/toolbox/${toolToRemove.value.id}`, { method: 'DELETE' })
     toast.add({ title: 'Tool deleted', description: `${toolToRemove.value.name}.ts removed`, color: 'success' })
     await refreshTools()
     if (selectedTool.value?.id === toolToRemove.value.id) {
-      void router.replace('/tools')
+      void router.replace('/toolbox')
       selectedTool.value = null
     }
     removeModalOpen.value = false
@@ -162,13 +162,13 @@ async function confirmRemove() {
 
 <template>
   <UDashboardPanel
-    id="tools-list"
+    id="toolbox-list"
     :default-size="25"
     :min-size="20"
     :max-size="30"
     resizable
   >
-    <UDashboardNavbar title="Tools">
+    <UDashboardNavbar title="Toolbox">
       <template #leading>
         <UDashboardSidebarCollapse />
       </template>
@@ -186,10 +186,10 @@ async function confirmRemove() {
         </div>
       </template>
     </UDashboardNavbar>
-    <ToolsList v-model="selectedTool" :tools="tools" removable :on-remove="openRemoveModal" />
+    <ToolboxList v-model="selectedTool" :tools="tools" removable :on-remove="openRemoveModal" />
   </UDashboardPanel>
 
-  <ToolsDetail v-if="selectedTool" :tool="selectedTool" @close="clearSelection" @saved="onToolSaved" />
+  <ToolboxDetail v-if="selectedTool" :tool="selectedTool" @close="clearSelection" @saved="onToolSaved" />
   <div v-else class="hidden lg:flex flex-1 items-center justify-center">
     <p class="text-muted-foreground">Nothing here</p>
   </div>
@@ -197,7 +197,7 @@ async function confirmRemove() {
   <ClientOnly>
     <USlideover v-if="isMobile" v-model:open="isToolPanelOpen">
       <template #content>
-        <ToolsDetail v-if="selectedTool" :tool="selectedTool" @close="clearSelection" @saved="onToolSaved" />
+        <ToolboxDetail v-if="selectedTool" :tool="selectedTool" @close="clearSelection" @saved="onToolSaved" />
       </template>
     </USlideover>
   </ClientOnly>

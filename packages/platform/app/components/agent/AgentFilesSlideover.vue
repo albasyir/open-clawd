@@ -96,7 +96,7 @@ watch(open, (isOpen) => {
               </p>
             </div>
             <div class="flex-1 overflow-y-auto">
-              <ToolsList
+              <ToolboxList
                 v-model="selectedFile"
                 :tools="agentFiles ?? []"
                 :removable="false"
@@ -105,7 +105,7 @@ watch(open, (isOpen) => {
             </div>
           </div>
           <div class="flex flex-col min-h-0">
-            <ToolsDetail
+            <ToolboxDetail
               v-if="selectedFile"
               :tool="selectedFile"
               :tools-api-base="filesApiBase"
