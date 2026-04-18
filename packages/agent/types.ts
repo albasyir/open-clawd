@@ -51,5 +51,4 @@ export interface TestResult {
 
 export interface Toolbox {
   tool: DynamicStructuredTool
-  humanInTheLoop?: HumanInTheLoopMiddlewareConfig['interruptOn']
 }

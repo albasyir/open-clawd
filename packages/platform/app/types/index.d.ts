@@ -82,7 +82,7 @@ export interface ChatTimelineItem {
   title: string
   description: string
   icon?: string
-  toolState?: 'working' | 'done' | 'error'
+  toolState?: 'working' | 'interrupted' | 'done' | 'error'
   durationMs?: number
 }
 

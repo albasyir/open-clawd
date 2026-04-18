@@ -50,6 +50,8 @@ const modelItems = [
 function shouldShowWorkingState(message: ChatMessage) {
   return message.role === 'agent'
     && message.streamState === 'working'
+    && !hasTimeline(message)
+    && !hasPendingApproval(message)
     && !message.content.trim()
     && !message.thinking?.trim()
 }
@@ -95,6 +97,10 @@ function formatDuration(durationMs?: number) {
 }
 
 function getToolCallLabel(item: ChatTimelineItem) {
+  if (item.toolState === 'interrupted') {
+    return `${item.title} interrupted`
+  }
+
   if (item.toolState === 'done') {
     return `${item.title} executed`
   }
@@ -112,6 +118,7 @@ function getToolCallSuffix(item: ChatTimelineItem) {
 
 function getToolCallIcon(_item: ChatTimelineItem) {
   if (_item.toolState === 'error') return 'i-lucide-circle-alert'
+  if (_item.toolState === 'interrupted') return 'i-lucide-circle-pause'
   if (_item.toolState === 'done') return 'i-lucide-circle-check'
   return 'i-lucide-wrench'
 }

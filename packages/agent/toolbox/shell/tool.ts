@@ -1,11 +1,35 @@
 import { spawn } from 'node:child_process'
 import { tool } from 'langchain'
+import { ToolMessage } from '@langchain/core/messages'
 import type { ToolRuntime } from '@langchain/core/tools'
+import { interrupt } from '@langchain/langgraph'
 import { z } from 'zod'
 
 const PROCESS_TIMEOUT_MS = 30_000
+const SHELL_TOOL_NAME = 'shell_exec'
+const SHELL_APPROVAL_DECISIONS = ['approve', 'edit', 'reject'] as const
+const SHELL_INTERRUPT_PATTERN = 'facebook.com'
 
-type ShellToolRuntime = ToolRuntime | { writer?: ((chunk: unknown) => void) | null }
+type ShellToolRuntime = Partial<ToolRuntime> & { writer?: ((chunk: unknown) => void) | null }
+type ShellToolInput = {
+  command: string
+  cwd?: string
+}
+type ShellApprovalDecision =
+  | { type: 'approve' }
+  | { type: 'edit', editedAction: { name: string, args: Record<string, unknown> } }
+  | { type: 'reject', message?: string }
+type ShellApprovalResponse = {
+  decisions: ShellApprovalDecision[]
+}
+type ShellApprovalResult =
+  | { type: 'execute', input: ShellToolInput }
+  | { type: 'reject', message: string | ToolMessage }
+
+const shellToolSchema = z.object({
+  command: z.string().describe('The shell command to run (e.g. "ls -la", "echo hello")'),
+  cwd: z.string().optional().describe('Working directory for the command (default: current)')
+})
 
 function createLineWriter(
   streamName: 'stdout' | 'stderr',
@@ -37,8 +61,96 @@ function flushLineWriter(
   }
 }
 
+function describeShellCommand(input: ShellToolInput): string {
+  const workingDirectory = input.cwd ? `\nWorking directory: ${input.cwd}` : ''
+  return `Command: ${input.command}${workingDirectory}`
+}
+
+function validateShellApprovalResponse(response: unknown): ShellApprovalDecision {
+  const decisions = (response as Partial<ShellApprovalResponse> | null | undefined)?.decisions
+  if (!Array.isArray(decisions) || decisions.length === 0) {
+    throw new Error('Invalid HITLResponse: decisions must be a non-empty array')
+  }
+  if (decisions.length !== 1) {
+    throw new Error(`Number of human decisions (${decisions.length}) does not match number of hanging tool calls (1).`)
+  }
+
+  const decision = decisions[0]
+  if (!decision || typeof decision !== 'object') {
+    throw new Error('Invalid human decision for shell_exec.')
+  }
+  if (!SHELL_APPROVAL_DECISIONS.includes(decision.type)) {
+    throw new Error(
+      `Unexpected human decision: ${JSON.stringify(decision)}. Decision type '${decision.type}' is not allowed for tool '${SHELL_TOOL_NAME}'. Expected one of ${JSON.stringify(SHELL_APPROVAL_DECISIONS)} based on the tool's configuration.`,
+    )
+  }
+
+  return decision
+}
+
+function rejectShellCommand(message: string, runtime?: ShellToolRuntime): string | ToolMessage {
+  const toolCallId = runtime?.toolCallId ?? runtime?.toolCall?.id
+  if (!toolCallId) return message
+
+  return new ToolMessage({
+    content: message,
+    name: SHELL_TOOL_NAME,
+    tool_call_id: toolCallId,
+    status: 'error',
+  })
+}
+
+function resolveShellApproval(input: ShellToolInput, runtime?: ShellToolRuntime): ShellApprovalResult {
+  if (!input.command.includes(SHELL_INTERRUPT_PATTERN)) {
+    return { type: 'execute', input }
+  }
+
+  const response = interrupt({
+    actionRequests: [
+      {
+        name: SHELL_TOOL_NAME,
+        args: input,
+        description: describeShellCommand(input),
+      },
+    ],
+    reviewConfigs: [
+      {
+        actionName: SHELL_TOOL_NAME,
+        allowedDecisions: [...SHELL_APPROVAL_DECISIONS],
+      },
+    ],
+  })
+
+  const decision = validateShellApprovalResponse(response)
+
+  if (decision.type === 'approve') return { type: 'execute', input }
+
+  if (decision.type === 'reject') {
+    return {
+      type: 'reject',
+      message: rejectShellCommand(
+        decision.message ?? `User rejected the tool call for \`${SHELL_TOOL_NAME}\``,
+        runtime,
+      ),
+    }
+  }
+
+  const editedAction = decision.editedAction
+  if (!editedAction || typeof editedAction.name !== 'string') {
+    throw new Error(`Invalid edited action for tool "${SHELL_TOOL_NAME}": name must be a string`)
+  }
+  if (editedAction.name !== SHELL_TOOL_NAME) {
+    throw new Error(`Invalid edited action for tool "${SHELL_TOOL_NAME}": name must be "${SHELL_TOOL_NAME}"`)
+  }
+  if (!editedAction.args || typeof editedAction.args !== 'object') {
+    throw new Error(`Invalid edited action for tool "${SHELL_TOOL_NAME}": args must be an object`)
+  }
+
+  return { type: 'execute', input: shellToolSchema.parse(editedAction.args) }
+}
+
 async function runShellCommand(
-  input: { command: string, cwd?: string },
+  input: ShellToolInput,
   runtime?: ShellToolRuntime,
 ): Promise<string> {
   const stdoutChunks: string[] = []
@@ -126,9 +238,11 @@ async function runShellCommand(
 }
 
 export const shellTool = tool(async (input, runtime: ShellToolRuntime) => {
-  return await runShellCommand(input, runtime)
+  const approval = resolveShellApproval(input, runtime)
+  if (approval.type === 'reject') return approval.message
+  return await runShellCommand(approval.input, runtime)
 }, {
-  name: 'shell_exec',
+  name: SHELL_TOOL_NAME,
   description: `Access the machine terminal and execute shell commands.
 
 This tool allows you to perform any task that can be done via a command-line interface (CLI), including but not limited to:
@@ -182,8 +296,5 @@ You may translate natural language into an appropriate shell command.
 If the user asks for something that can be done in a terminal, use this tool.
 
 This is the primary interface for interacting with the machine.`,
-  schema: z.object({
-    command: z.string().describe('The shell command to run (e.g. "ls -la", "echo hello")'),
-    cwd: z.string().optional().describe('Working directory for the command (default: current)')
-  })
+  schema: shellToolSchema
 })

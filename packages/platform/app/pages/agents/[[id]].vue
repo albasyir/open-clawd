@@ -156,6 +156,15 @@ function appendTimelineDetail(current: string, label: string, data?: unknown): s
   return current ? `${current}\n\n${details}` : details
 }
 
+function isInterruptToolError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+
+  const item = error as Record<string, unknown>
+  return item.name === 'GraphInterrupt'
+    || Array.isArray(item.interrupts)
+    || Array.isArray(item.__interrupt__)
+}
+
 function normalizePendingApproval(interrupt: { id?: string, value?: unknown }): ChatPendingApproval {
   const value = interrupt.value && typeof interrupt.value === 'object'
     ? interrupt.value as Record<string, unknown>
@@ -240,6 +249,7 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
   let currentToolTimeline: ChatTimelineItem[] = []
   let currentToolTimelineIndexByKey = new Map<string, number>()
   let activeToolKeys: string[] = []
+  let streamFailed = false
 
   function appendAgentMessage(message: ChatMessage): string {
     updateConversationMessages(conversationId, messages => [...messages, message])
@@ -252,6 +262,12 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
   ) {
     updateConversationMessages(conversationId, messages =>
       messages.map(msg => msg.id === messageId ? updater(msg) : msg)
+    )
+  }
+
+  function removeAgentMessage(messageId: string) {
+    updateConversationMessages(conversationId, messages =>
+      messages.filter(msg => msg.id !== messageId)
     )
   }
 
@@ -355,6 +371,26 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
       resetToolSegment()
     }
 
+    function finishInterruptedToolSegment() {
+      if (!currentToolMessageId || !currentToolTimeline.length) return false
+
+      const activeKeys = new Set(activeToolKeys)
+      currentToolTimeline = currentToolTimeline.map(item => {
+        if (item.toolState !== 'working' && !activeKeys.has(item.value)) return item
+
+        return {
+          ...item,
+          description: appendTimelineDetail(item.description, '[interrupted]', 'Tool execution paused for approval'),
+          icon: 'i-lucide-circle-pause',
+          toolState: 'interrupted',
+          durationMs: item.durationMs ?? Math.max(0, Date.now() - new Date(item.date).getTime())
+        }
+      })
+      activeToolKeys = []
+      finishToolSegment('done')
+      return true
+    }
+
     function enterTextSegment(streamState: ChatMessage['streamState'] = 'working'): string {
       if (currentToolMessageId) {
         finishToolSegment('done')
@@ -408,7 +444,9 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
 
     function showPendingApproval(interrupt: { id?: string, value?: unknown }) {
       completeThinking()
-      if (currentToolMessageId) finishToolSegment('done')
+      if (currentToolMessageId && !finishInterruptedToolSegment()) {
+        finishToolSegment('done')
+      }
 
       const pendingApproval = normalizePendingApproval(interrupt)
       const approvalMessage: ChatMessage = {
@@ -524,6 +562,27 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
           return
         }
 
+        if (event.event === 'on_tool_error' && isInterruptToolError(event.error)) {
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
+          if (!activeKey) return
+
+          upsertTimelineItem(activeKey, existing => ({
+            value: existing?.value ?? activeKey,
+            slot: existing?.slot ?? `tool-${currentToolTimeline.length}`,
+            date: existing?.date ?? new Date().toISOString(),
+            title: existing?.title ?? event.name,
+            description: appendTimelineDetail(existing?.description ?? '', '[interrupted]', 'Tool execution paused for approval'),
+            icon: 'i-lucide-circle-pause',
+            toolState: 'interrupted',
+            durationMs: existing ? Math.max(0, Date.now() - new Date(existing.date).getTime()) : undefined
+          }))
+
+          const activeIndex = activeToolKeys.lastIndexOf(activeKey)
+          if (activeIndex >= 0) activeToolKeys.splice(activeIndex, 1)
+          syncCurrentToolMessage('done')
+          return
+        }
+
         const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey() ?? key
         upsertTimelineItem(activeKey, (existing) => ({
           value: existing?.value ?? activeKey,
@@ -607,6 +666,7 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
       handleStreamChunk(JSON.parse(trailing) as ChatStreamChunk)
     }
   } catch (e: any) {
+    streamFailed = true
     const errMsg = e?.data?.message || e?.data?.data?.message || e?.message || `Failed to get response from ${agentName}`
     toast.add({
       title: 'Error',
@@ -646,6 +706,9 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
       ])
     }
   } finally {
+    if (!streamFailed && currentTextMessageId && !currentTextContent && !currentTextThinking) {
+      removeAgentMessage(currentTextMessageId)
+    }
     sendLoading.value = false
   }
 }

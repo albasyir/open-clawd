@@ -1,6 +1,5 @@
 import {
   createAgent,
-  humanInTheLoopMiddleware,
   summarizationMiddleware,
 } from 'langchain'
 
@@ -8,7 +7,6 @@ import model from './model'
 import memory from './memory'
 import tools from './tool'
 import identity from './identity'
-import { Toolbox } from '../../types'
 
 const agent = createAgent({
   name: identity.name,
@@ -16,16 +14,6 @@ const agent = createAgent({
   tools: tools.map(({ tool }) => tool),
   checkpointer: memory,
   middleware: [
-    humanInTheLoopMiddleware({
-      interruptOn: {
-        ...tools.reduce((acc, { humanInTheLoop }) => {
-          if (humanInTheLoop) {
-            acc = Object.assign(acc, humanInTheLoop)
-          }
-          return acc
-        }, {} satisfies Toolbox['humanInTheLoop'])
-      },
-    }),
     summarizationMiddleware({
       model: model,
       trigger: { fraction: 0.8 },
