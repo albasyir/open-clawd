@@ -7,7 +7,7 @@ export default defineEventHandler(async (event) => {
   }).parse)
 
   try {
-    toolManager.deleteForAgent(id, toolId)
+    toolManager.unlinkTool(id, toolId)
     return { ok: true }
   } catch (err) {
     throwAgentError(err)

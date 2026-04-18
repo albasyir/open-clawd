@@ -86,6 +86,27 @@ export interface ChatTimelineItem {
   durationMs?: number
 }
 
+export type ChatApprovalDecisionType = 'approve' | 'edit' | 'reject'
+
+export interface ChatApprovalAction {
+  name: string
+  args: Record<string, unknown>
+  description?: string
+}
+
+export interface ChatApprovalReviewConfig {
+  actionName: string
+  allowedDecisions: ChatApprovalDecisionType[]
+  argsSchema?: Record<string, unknown>
+}
+
+export interface ChatPendingApproval {
+  id?: string
+  actionRequests: ChatApprovalAction[]
+  reviewConfigs: ChatApprovalReviewConfig[]
+  state: 'pending' | 'approved' | 'edited' | 'commented' | 'rejected'
+}
+
 export interface ChatMessage {
   id: string
   role: ChatMessageRole
@@ -95,6 +116,7 @@ export interface ChatMessage {
   thinkingDurationMs?: number
   date: string
   timeline?: ChatTimelineItem[]
+  pendingApproval?: ChatPendingApproval
   streamState?: 'working' | 'done' | 'error'
 }
 

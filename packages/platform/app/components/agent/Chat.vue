@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { format } from 'date-fns'
-import type { AgentConversation, ChatMessage, ChatTimelineItem } from '~/types'
+import type { AgentConversation, ChatApprovalAction, ChatMessage, ChatTimelineItem } from '~/types'
 
 const props = withDefaults(
   defineProps<{
@@ -16,6 +16,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   close: []
   send: [message: string]
+  approvalDecision: [messageId: string, decision: 'approve' | 'edit' | 'comment' | 'reject', payload?: Array<{ name: string, args: Record<string, unknown> }> | string]
   newChat: []
   deleteAgent: []
 }>()
@@ -24,14 +25,27 @@ const message = ref('')
 const localSending = ref(false)
 const filesSlideoverOpen = ref(false)
 const toolsSlideoverOpen = ref(false)
-const thinkingOpen = ref<Record<string, boolean>>({})
+
 const toolCallOpen = ref<Record<string, boolean>>({})
+const approvalEditModalOpen = ref(false)
+const approvalEditMessageId = ref<string | null>(null)
+const approvalEditActionCount = ref(0)
+const approvalEditActionsText = ref('')
+const approvalEditError = ref('')
+const approvalCommentModalOpen = ref(false)
+const approvalCommentMessageId = ref<string | null>(null)
+const approvalCommentText = ref('')
 
 const loading = computed(() => localSending.value || !!props.sendLoading)
-
-function formatTimelineDate(date: string) {
-  return format(new Date(date), 'HH:mm:ss')
-}
+const promptSubmitDisabled = computed(() => loading.value || !message.value.trim())
+const selectedModel = ref('qwen3.5:9b')
+const modelItems = [
+  {
+    label: 'qwen3.5:9b',
+    value: 'qwen3.5:9b',
+    icon: 'i-lucide-cpu'
+  }
+]
 
 function shouldShowWorkingState(message: ChatMessage) {
   return message.role === 'agent'
@@ -44,19 +58,12 @@ function hasTimeline(message: ChatMessage) {
   return message.role === 'agent' && !!message.timeline?.length
 }
 
+function hasPendingApproval(message: ChatMessage) {
+  return message.role === 'agent' && !!message.pendingApproval
+}
+
 function hasThinking(message: ChatMessage) {
   return message.role === 'agent' && !!message.thinking?.trim()
-}
-
-function isThinkingOpen(messageId: string) {
-  return !!thinkingOpen.value[messageId]
-}
-
-function toggleThinking(messageId: string) {
-  thinkingOpen.value = {
-    ...thinkingOpen.value,
-    [messageId]: !thinkingOpen.value[messageId]
-  }
 }
 
 function getToolCallKey(messageId: string, itemValue: string) {
@@ -67,11 +74,11 @@ function isToolCallOpen(messageId: string, itemValue: string) {
   return !!toolCallOpen.value[getToolCallKey(messageId, itemValue)]
 }
 
-function toggleToolCall(messageId: string, itemValue: string) {
+function setToolCallOpen(messageId: string, itemValue: string, open: boolean) {
   const key = getToolCallKey(messageId, itemValue)
   toolCallOpen.value = {
     ...toolCallOpen.value,
-    [key]: !toolCallOpen.value[key]
+    [key]: open
   }
 }
 
@@ -87,37 +94,39 @@ function formatDuration(durationMs?: number) {
   return `${label} second${roundedSeconds === 1 ? '' : 's'}`
 }
 
-function getThinkingLabel(message: ChatMessage) {
-  if (message.thinkingState === 'done') {
-    const duration = formatDuration(message.thinkingDurationMs)
-    return duration ? `Thought for ${duration}` : 'Thought'
-  }
-
-  return 'Thinking'
-}
-
 function getToolCallLabel(item: ChatTimelineItem) {
   if (item.toolState === 'done') {
-    const duration = formatDuration(item.durationMs)
-    return duration ? `${item.title} executed for ${duration}` : `${item.title} executed`
+    return `${item.title} executed`
   }
 
   if (item.toolState === 'error') {
-    const duration = formatDuration(item.durationMs)
-    return duration ? `${item.title} failed after ${duration}` : `${item.title} failed`
+    return `${item.title} failed`
   }
 
   return `Executing ${item.title}`
 }
 
+function getToolCallSuffix(item: ChatTimelineItem) {
+  return formatDuration(item.durationMs) ?? undefined
+}
+
 function getToolCallIcon(_item: ChatTimelineItem) {
+  if (_item.toolState === 'error') return 'i-lucide-circle-alert'
+  if (_item.toolState === 'done') return 'i-lucide-circle-check'
   return 'i-lucide-wrench'
 }
 
-function getToolCallIconClass(item: ChatTimelineItem) {
-  if (item.toolState === 'done') return 'text-primary/80'
-  if (item.toolState === 'error') return 'text-error/80'
-  return 'animate-pulse text-primary/80'
+function isToolCallStreaming(item: ChatTimelineItem) {
+  return item.toolState === 'working'
+}
+
+function isReasoningStreaming(message: ChatMessage) {
+  return message.thinkingState === 'working'
+}
+
+function getReasoningDuration(message: ChatMessage) {
+  if (message.thinkingDurationMs == null) return undefined
+  return Math.ceil(message.thinkingDurationMs / 1000)
 }
 
 function shouldRenderBubble(message: ChatMessage) {
@@ -125,7 +134,13 @@ function shouldRenderBubble(message: ChatMessage) {
 }
 
 function shouldRenderAgentContent(message: ChatMessage) {
-  return message.role === 'agent' && (!!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message))
+  return message.role === 'agent'
+    && !hasPendingApproval(message)
+    && (!!message.content.trim() || shouldShowWorkingState(message) || !hasTimeline(message))
+}
+
+function shouldShowAgentTimestamp(message: ChatMessage) {
+  return !!message.content.trim() && !hasThinking(message) && !shouldShowWorkingState(message)
 }
 
 function onSubmit() {
@@ -139,6 +154,148 @@ function onSubmit() {
   setTimeout(() => {
     localSending.value = false
   }, 500)
+}
+
+function getApprovalStatus(message: ChatMessage) {
+  const state = message.pendingApproval?.state
+  if (state === 'approved') return 'Approved'
+  if (state === 'edited') return 'Edited'
+  if (state === 'commented') return 'Comment sent'
+  if (state === 'rejected') return 'Rejected'
+  return 'Awaiting approval'
+}
+
+function getApprovalStatusIcon(message: ChatMessage) {
+  const state = message.pendingApproval?.state
+  if (state === 'approved') return 'i-lucide-circle-check'
+  if (state === 'edited') return 'i-lucide-pencil'
+  if (state === 'commented') return 'i-lucide-message-square'
+  if (state === 'rejected') return 'i-lucide-circle-x'
+  return 'i-lucide-shield-alert'
+}
+
+function getApprovalStatusClass(message: ChatMessage) {
+  const state = message.pendingApproval?.state
+  if (state === 'approved') return 'text-success'
+  if (state === 'edited') return 'text-info'
+  if (state === 'commented') return 'text-info'
+  if (state === 'rejected') return 'text-error'
+  return 'text-warning'
+}
+
+function getApprovalActionDescription(action: ChatApprovalAction) {
+  if (action.description?.trim()) return action.description
+  return JSON.stringify(action.args, null, 2)
+}
+
+function isApprovalDecisionAllowed(message: ChatMessage, decision: 'approve' | 'edit' | 'reject') {
+  const configs = message.pendingApproval?.reviewConfigs ?? []
+  if (!configs.length) return true
+  return configs.every(config => config.allowedDecisions.includes(decision))
+}
+
+function canRespondToApproval(message: ChatMessage, decision: 'approve' | 'reject') {
+  return message.pendingApproval?.state === 'pending'
+    && !loading.value
+    && isApprovalDecisionAllowed(message, decision)
+}
+
+function canEditApproval(message: ChatMessage) {
+  return message.pendingApproval?.state === 'pending'
+    && !loading.value
+    && isApprovalDecisionAllowed(message, 'edit')
+}
+
+function canCommentOnApproval(message: ChatMessage) {
+  return message.pendingApproval?.state === 'pending'
+    && !loading.value
+    && isApprovalDecisionAllowed(message, 'reject')
+}
+
+function getEditableApprovalActions(message: ChatMessage) {
+  return (message.pendingApproval?.actionRequests ?? []).map(action => ({
+    name: action.name,
+    args: action.args,
+  }))
+}
+
+function openApprovalEditDialog(message: ChatMessage) {
+  if (!canEditApproval(message)) return
+
+  const actions = getEditableApprovalActions(message)
+  approvalEditMessageId.value = message.id
+  approvalEditActionCount.value = actions.length
+  approvalEditActionsText.value = JSON.stringify(actions.length === 1 ? actions[0] : actions, null, 2)
+  approvalEditError.value = ''
+  approvalEditModalOpen.value = true
+}
+
+function parseEditedApprovalActions() {
+  approvalEditError.value = ''
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(approvalEditActionsText.value)
+  } catch {
+    approvalEditError.value = 'Invalid JSON.'
+    return null
+  }
+
+  const items = Array.isArray(parsed) ? parsed : [parsed]
+  if (items.length !== approvalEditActionCount.value) {
+    approvalEditError.value = `Expected ${approvalEditActionCount.value} edited action${approvalEditActionCount.value === 1 ? '' : 's'}.`
+    return null
+  }
+
+  const editedActions = items.map((item) => {
+    const action = item && typeof item === 'object' ? item as Record<string, unknown> : null
+    const args = action?.args
+
+    if (!action || typeof action.name !== 'string' || !action.name.trim() || !args || typeof args !== 'object' || Array.isArray(args)) {
+      approvalEditError.value = 'Each edited action must include a name and object args.'
+      return null
+    }
+
+    return {
+      name: action.name.trim(),
+      args: args as Record<string, unknown>,
+    }
+  })
+
+  if (editedActions.some(action => action == null)) return null
+  return editedActions as Array<{ name: string, args: Record<string, unknown> }>
+}
+
+function submitApprovalEdit() {
+  if (!approvalEditMessageId.value || !approvalEditActionsText.value.trim() || loading.value) return
+
+  const editedActions = parseEditedApprovalActions()
+  if (!editedActions) return
+
+  emit('approvalDecision', approvalEditMessageId.value, 'edit', editedActions)
+  approvalEditModalOpen.value = false
+  approvalEditMessageId.value = null
+  approvalEditActionCount.value = 0
+  approvalEditActionsText.value = ''
+  approvalEditError.value = ''
+}
+
+function openApprovalCommentDialog(message: ChatMessage) {
+  if (!canCommentOnApproval(message)) return
+
+  approvalCommentMessageId.value = message.id
+  approvalCommentText.value = ''
+  approvalCommentModalOpen.value = true
+}
+
+function submitApprovalComment() {
+  const text = approvalCommentText.value.trim()
+  if (!approvalCommentMessageId.value || !text || loading.value) return
+
+  emit('approvalDecision', approvalCommentMessageId.value, 'comment', text)
+  approvalCommentModalOpen.value = false
+  approvalCommentMessageId.value = null
+  approvalCommentText.value = ''
 }
 
 const filesSlideoverInitialFile = ref<string>()
@@ -199,9 +356,9 @@ defineExpose({
             @click="filesSlideoverOpen = true"
           />
         </UTooltip>
-        <UTooltip text="Manage tools">
+        <UTooltip text="Connect tools">
           <UButton
-            icon="i-lucide-wrench"
+            icon="i-lucide-plug"
             color="neutral"
             variant="ghost"
             @click="toolsSlideoverOpen = true"
@@ -234,76 +391,106 @@ defineExpose({
           class="max-w-[85%] min-w-0"
         >
           <div v-if="hasTimeline(msg)" class="mb-2 space-y-2">
-            <div
+            <UChatTool
               v-for="item in (msg.timeline || [])"
               :key="`${msg.id}-${item.value}`"
-              class="rounded-lg border border-primary/15 bg-primary/5"
+              :open="isToolCallOpen(msg.id, String(item.value))"
+              :text="getToolCallLabel(item)"
+              :suffix="getToolCallSuffix(item)"
+              :icon="getToolCallIcon(item)"
+              :loading="isToolCallStreaming(item)"
+              :streaming="isToolCallStreaming(item)"
+              chevron="trailing"
+              @update:open="setToolCallOpen(msg.id, String(item.value), $event)"
             >
-              <button
-                type="button"
-                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-                @click="toggleToolCall(msg.id, String(item.value))"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <UIcon
-                    :name="getToolCallIcon(item)"
-                    class="size-4 shrink-0"
-                    :class="getToolCallIconClass(item)"
-                  />
-                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                    {{ getToolCallLabel(item) }}
-                  </span>
-                </div>
-                <div class="flex shrink-0 items-center gap-2">
-                  <span class="text-[11px] text-dimmed">
-                    {{ formatTimelineDate(item.date) }}
-                  </span>
-                  <UIcon
-                    name="i-lucide-chevron-down"
-                    class="size-4 text-primary/70 transition-transform"
-                    :class="isToolCallOpen(msg.id, String(item.value)) ? 'rotate-180' : ''"
-                  />
-                </div>
-              </button>
-              <div v-if="isToolCallOpen(msg.id, String(item.value))" class="border-t border-primary/10 px-3 py-2">
-                <p class="whitespace-pre-wrap text-xs text-toned">
-                  {{ item.description }}
+              {{ item.description }}
+            </UChatTool>
+          </div>
+          <div
+            v-if="hasPendingApproval(msg)"
+            class="mb-2 w-full max-w-xl rounded-lg border border-default bg-elevated p-3 shadow-sm"
+          >
+            <div class="flex items-start gap-3">
+              <UIcon
+                :name="getApprovalStatusIcon(msg)"
+                class="mt-0.5 size-4 shrink-0"
+                :class="getApprovalStatusClass(msg)"
+              />
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-highlighted">
+                  {{ getApprovalStatus(msg) }}
                 </p>
+                <div class="mt-2 space-y-2">
+                  <div
+                    v-for="(action, index) in (msg.pendingApproval?.actionRequests || [])"
+                    :key="`${msg.id}-approval-${index}`"
+                    class="rounded-md border border-default bg-default/50 p-2"
+                  >
+                    <p class="truncate text-xs font-medium text-muted">
+                      {{ action.name }}
+                    </p>
+                    <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-default">{{ getApprovalActionDescription(action) }}</pre>
+                  </div>
+                </div>
+                <div v-if="msg.pendingApproval?.state === 'pending'" class="mt-3 flex flex-wrap gap-2">
+                  <UButton
+                    label="Approve"
+                    icon="i-lucide-check"
+                    color="success"
+                    size="xs"
+                    :disabled="!canRespondToApproval(msg, 'approve')"
+                    @click="emit('approvalDecision', msg.id, 'approve')"
+                  />
+                  <UButton
+                    label="Edit"
+                    icon="i-lucide-pencil"
+                    color="info"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canEditApproval(msg)"
+                    @click="openApprovalEditDialog(msg)"
+                  />
+                  <UButton
+                    label="Comment"
+                    icon="i-lucide-message-square"
+                    color="info"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canCommentOnApproval(msg)"
+                    @click="openApprovalCommentDialog(msg)"
+                  />
+                  <UButton
+                    label="Reject"
+                    icon="i-lucide-x"
+                    color="error"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canRespondToApproval(msg, 'reject')"
+                    @click="emit('approvalDecision', msg.id, 'reject')"
+                  />
+                </div>
               </div>
             </div>
+            <p class="mt-2 text-xs text-dimmed">
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
           </div>
           <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
-            <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
-              <button
-                type="button"
-                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-                @click="toggleThinking(msg.id)"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <UIcon name="i-lucide-brain" class="size-4 shrink-0 text-primary/80" />
-                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                    {{ getThinkingLabel(msg) }}
-                  </span>
-                </div>
-                <UIcon
-                  name="i-lucide-chevron-down"
-                  class="size-4 text-primary/70 transition-transform"
-                  :class="isThinkingOpen(msg.id) ? 'rotate-180' : ''"
-                />
-              </button>
-              <div v-if="isThinkingOpen(msg.id)" class="border-t border-primary/10 px-3 py-2">
-                <p class="whitespace-pre-wrap text-xs text-toned">
-                  {{ msg.thinking }}
-                </p>
-              </div>
-            </div>
+            <UChatReasoning
+              v-if="hasThinking(msg)"
+              class="mb-3"
+              :text="msg.thinking"
+              :streaming="isReasoningStreaming(msg)"
+              :duration="getReasoningDuration(msg)"
+              icon="i-lucide-brain"
+            />
             <AgentChatMarkdown v-if="msg.content" :content="msg.content" />
             <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
               <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-36 rounded-full bg-primary/15 ring-1 ring-primary/10" />
             </div>
-            <p v-if="!shouldShowWorkingState(msg)" class="mt-1 text-xs text-dimmed">
+            <p v-if="shouldShowAgentTimestamp(msg)" class="mt-1 text-xs text-dimmed">
               {{ format(new Date(msg.date), 'HH:mm') }}
             </p>
           </div>
@@ -326,34 +513,32 @@ defineExpose({
     </div>
 
     <div class="pb-4 px-4 sm:px-6 shrink-0">
-      <UCard variant="subtle" class="mt-auto" :ui="{ header: 'flex items-center gap-1.5 text-dimmed' }">
-        <template #header>
-          <UIcon name="i-lucide-message-circle" class="size-5" />
-          <span class="text-sm truncate">Message {{ conversation.agent.name }}</span>
-        </template>
-        <form @submit.prevent="onSubmit">
-          <UTextarea
-            v-model="message"
-            color="neutral"
-            variant="none"
-            autoresize
-            placeholder="Type your message..."
-            :rows="2"
-            class="w-full"
-            :ui="{ base: 'p-0 resize-none' }"
-            @keydown.enter.exact.prevent="onSubmit"
+      <UChatPrompt
+        v-model="message"
+        variant="subtle"
+        placeholder="Type your message..."
+        :rows="2"
+        :disabled="loading"
+        class="mt-auto"
+        @submit="onSubmit"
+      >
+        <UChatPromptSubmit
+          color="neutral"
+          :loading="loading"
+          :disabled="promptSubmitDisabled"
+        />
+
+        <template #footer>
+          <USelect
+            v-model="selectedModel"
+            :items="modelItems"
+            icon="i-lucide-cpu"
+            placeholder="Select a model"
+            variant="ghost"
+            disabled
           />
-          <div class="flex justify-end gap-2 mt-2">
-            <UButton
-              type="submit"
-              color="primary"
-              :loading="loading"
-              label="Send"
-              icon="i-lucide-send"
-            />
-          </div>
-        </form>
-      </UCard>
+        </template>
+      </UChatPrompt>
     </div>
   </UDashboardPanel>
 
@@ -398,9 +583,9 @@ defineExpose({
             @click="filesSlideoverOpen = true"
           />
         </UTooltip>
-        <UTooltip text="Manage tools">
+        <UTooltip text="Connect tools">
           <UButton
-            icon="i-lucide-wrench"
+            icon="i-lucide-plug"
             color="neutral"
             variant="ghost"
             @click="toolsSlideoverOpen = true"
@@ -428,76 +613,106 @@ defineExpose({
         </div>
         <div class="max-w-[85%] min-w-0">
           <div v-if="hasTimeline(msg)" class="mb-2 space-y-2">
-            <div
+            <UChatTool
               v-for="item in (msg.timeline || [])"
               :key="`${msg.id}-${item.value}-mobile`"
-              class="rounded-lg border border-primary/15 bg-primary/5"
+              :open="isToolCallOpen(msg.id, String(item.value))"
+              :text="getToolCallLabel(item)"
+              :suffix="getToolCallSuffix(item)"
+              :icon="getToolCallIcon(item)"
+              :loading="isToolCallStreaming(item)"
+              :streaming="isToolCallStreaming(item)"
+              chevron="trailing"
+              @update:open="setToolCallOpen(msg.id, String(item.value), $event)"
             >
-              <button
-                type="button"
-                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-                @click="toggleToolCall(msg.id, String(item.value))"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <UIcon
-                    :name="getToolCallIcon(item)"
-                    class="size-4 shrink-0"
-                    :class="getToolCallIconClass(item)"
-                  />
-                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                    {{ getToolCallLabel(item) }}
-                  </span>
-                </div>
-                <div class="flex shrink-0 items-center gap-2">
-                  <span class="text-[11px] text-dimmed">
-                    {{ formatTimelineDate(item.date) }}
-                  </span>
-                  <UIcon
-                    name="i-lucide-chevron-down"
-                    class="size-4 text-primary/70 transition-transform"
-                    :class="isToolCallOpen(msg.id, String(item.value)) ? 'rotate-180' : ''"
-                  />
-                </div>
-              </button>
-              <div v-if="isToolCallOpen(msg.id, String(item.value))" class="border-t border-primary/10 px-3 py-2">
-                <p class="whitespace-pre-wrap text-xs text-toned">
-                  {{ item.description }}
+              {{ item.description }}
+            </UChatTool>
+          </div>
+          <div
+            v-if="hasPendingApproval(msg)"
+            class="mb-2 w-full max-w-xl rounded-lg border border-default bg-elevated p-3 shadow-sm"
+          >
+            <div class="flex items-start gap-3">
+              <UIcon
+                :name="getApprovalStatusIcon(msg)"
+                class="mt-0.5 size-4 shrink-0"
+                :class="getApprovalStatusClass(msg)"
+              />
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-highlighted">
+                  {{ getApprovalStatus(msg) }}
                 </p>
+                <div class="mt-2 space-y-2">
+                  <div
+                    v-for="(action, index) in (msg.pendingApproval?.actionRequests || [])"
+                    :key="`${msg.id}-approval-${index}-mobile`"
+                    class="rounded-md border border-default bg-default/50 p-2"
+                  >
+                    <p class="truncate text-xs font-medium text-muted">
+                      {{ action.name }}
+                    </p>
+                    <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-default">{{ getApprovalActionDescription(action) }}</pre>
+                  </div>
+                </div>
+                <div v-if="msg.pendingApproval?.state === 'pending'" class="mt-3 flex flex-wrap gap-2">
+                  <UButton
+                    label="Approve"
+                    icon="i-lucide-check"
+                    color="success"
+                    size="xs"
+                    :disabled="!canRespondToApproval(msg, 'approve')"
+                    @click="emit('approvalDecision', msg.id, 'approve')"
+                  />
+                  <UButton
+                    label="Edit"
+                    icon="i-lucide-pencil"
+                    color="info"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canEditApproval(msg)"
+                    @click="openApprovalEditDialog(msg)"
+                  />
+                  <UButton
+                    label="Comment"
+                    icon="i-lucide-message-square"
+                    color="info"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canCommentOnApproval(msg)"
+                    @click="openApprovalCommentDialog(msg)"
+                  />
+                  <UButton
+                    label="Reject"
+                    icon="i-lucide-x"
+                    color="error"
+                    variant="soft"
+                    size="xs"
+                    :disabled="!canRespondToApproval(msg, 'reject')"
+                    @click="emit('approvalDecision', msg.id, 'reject')"
+                  />
+                </div>
               </div>
             </div>
+            <p class="mt-2 text-xs text-dimmed">
+              {{ format(new Date(msg.date), 'HH:mm') }}
+            </p>
           </div>
           <div v-if="shouldRenderAgentContent(msg)" class="px-1 py-0.5">
-            <div v-if="hasThinking(msg)" class="mb-3 rounded-lg border border-primary/15 bg-primary/5">
-              <button
-                type="button"
-                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-                @click="toggleThinking(msg.id)"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <UIcon name="i-lucide-brain" class="size-4 shrink-0 text-primary/80" />
-                  <span class="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-primary/80">
-                    {{ getThinkingLabel(msg) }}
-                  </span>
-                </div>
-                <UIcon
-                  name="i-lucide-chevron-down"
-                  class="size-4 text-primary/70 transition-transform"
-                  :class="isThinkingOpen(msg.id) ? 'rotate-180' : ''"
-                />
-              </button>
-              <div v-if="isThinkingOpen(msg.id)" class="border-t border-primary/10 px-3 py-2">
-                <p class="whitespace-pre-wrap text-xs text-toned">
-                  {{ msg.thinking }}
-                </p>
-              </div>
-            </div>
+            <UChatReasoning
+              v-if="hasThinking(msg)"
+              class="mb-3"
+              :text="msg.thinking"
+              :streaming="isReasoningStreaming(msg)"
+              :duration="getReasoningDuration(msg)"
+              icon="i-lucide-brain"
+            />
             <AgentChatMarkdown v-if="msg.content" :content="msg.content" />
             <div v-else-if="shouldShowWorkingState(msg)" class="space-y-2 py-0.5">
               <USkeleton class="h-3.5 w-20 rounded-full bg-primary/25 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-52 rounded-full bg-primary/20 ring-1 ring-primary/10" />
               <USkeleton class="h-3.5 w-36 rounded-full bg-primary/15 ring-1 ring-primary/10" />
             </div>
-            <p v-if="!shouldShowWorkingState(msg)" class="mt-1 text-xs text-dimmed">
+            <p v-if="shouldShowAgentTimestamp(msg)" class="mt-1 text-xs text-dimmed">
               {{ format(new Date(msg.date), 'HH:mm') }}
             </p>
           </div>
@@ -517,35 +732,32 @@ defineExpose({
       </div>
     </div>
     <div class="shrink-0 px-4 pb-4 sm:px-6">
-      <UCard variant="subtle" class="mt-auto" :ui="{ header: 'flex items-center gap-1.5 text-dimmed' }">
-        <template #header>
-          <UIcon name="i-lucide-message-circle" class="size-5" />
-          <span class="truncate text-sm">Message {{ conversation.agent.name }}</span>
-        </template>
-        <form @submit.prevent="onSubmit">
-          <UTextarea
-            v-model="message"
-            color="neutral"
-            variant="none"
-            autoresize
-            placeholder="Type your message..."
-            :rows="2"
-            :disabled="loading"
-            class="w-full"
-            :ui="{ base: 'p-0 resize-none' }"
-            @keydown.enter.exact.prevent="onSubmit"
+      <UChatPrompt
+        v-model="message"
+        variant="subtle"
+        placeholder="Type your message..."
+        :rows="2"
+        :disabled="loading"
+        class="mt-auto"
+        @submit="onSubmit"
+      >
+        <UChatPromptSubmit
+          color="neutral"
+          :loading="loading"
+          :disabled="promptSubmitDisabled"
+        />
+
+        <template #footer>
+          <USelect
+            v-model="selectedModel"
+            :items="modelItems"
+            icon="i-lucide-cpu"
+            placeholder="Select a model"
+            variant="ghost"
+            disabled
           />
-          <div class="mt-2 flex justify-end gap-2">
-            <UButton
-              type="submit"
-              color="primary"
-              :loading="loading"
-              label="Send"
-              icon="i-lucide-send"
-            />
-          </div>
-        </form>
-      </UCard>
+        </template>
+      </UChatPrompt>
     </div>
   </div>
 
@@ -561,4 +773,75 @@ defineExpose({
     :agent-id="conversation.id"
     :agent-name="conversation.agent.name"
   />
+
+
+  <UModal v-model:open="approvalEditModalOpen" title="Edit tool request">
+    <template #body>
+      <div class="space-y-4 p-4">
+        <UTextarea
+          v-model="approvalEditActionsText"
+          :rows="10"
+          autoresize
+          autofocus
+          placeholder="{ &quot;name&quot;: &quot;shell_exec&quot;, &quot;args&quot;: { &quot;command&quot;: &quot;pwd&quot; } }"
+          :disabled="loading"
+          class="font-mono text-xs"
+          @keydown.meta.enter.prevent="submitApprovalEdit"
+          @keydown.ctrl.enter.prevent="submitApprovalEdit"
+        />
+        <p v-if="approvalEditError" class="text-sm text-error">
+          {{ approvalEditError }}
+        </p>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="Cancel"
+            color="neutral"
+            variant="ghost"
+            :disabled="loading"
+            @click="approvalEditModalOpen = false"
+          />
+          <UButton
+            label="Apply edit"
+            icon="i-lucide-pencil"
+            color="info"
+            :disabled="!approvalEditActionsText.trim() || loading"
+            @click="submitApprovalEdit"
+          />
+        </div>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal v-model:open="approvalCommentModalOpen" title="Comment on tool request">
+    <template #body>
+      <div class="space-y-4 p-4">
+        <UTextarea
+          v-model="approvalCommentText"
+          :rows="5"
+          autoresize
+          autofocus
+          placeholder="Tell the agent what to change or reconsider..."
+          :disabled="loading"
+          @keydown.meta.enter.prevent="submitApprovalComment"
+          @keydown.ctrl.enter.prevent="submitApprovalComment"
+        />
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="Cancel"
+            color="neutral"
+            variant="ghost"
+            :disabled="loading"
+            @click="approvalCommentModalOpen = false"
+          />
+          <UButton
+            label="Send comment"
+            icon="i-lucide-send"
+            color="info"
+            :disabled="!approvalCommentText.trim() || loading"
+            @click="submitApprovalComment"
+          />
+        </div>
+      </div>
+    </template>
+  </UModal>
 </template>

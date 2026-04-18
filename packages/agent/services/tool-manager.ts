@@ -1,6 +1,6 @@
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync,
-  readdirSync, readFileSync, readlinkSync, symlinkSync,
+  existsSync, mkdirSync,
+  readdirSync, readFileSync,
   unlinkSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -22,45 +22,7 @@ export default tool((input) => \`\${input.firstName} \${input.lastName}\`, {
 })
 `
 
-function addToToolFile(baseDir: string, agentId: string, toolName: string): void {
-  const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
-  if (!existsSync(toolFilePath)) return
 
-  const newEntry = `    (await import('./tools/${toolName}')).default`
-  let content = readFileSync(toolFilePath, 'utf-8')
-
-  if (content.includes(`'./tools/${toolName}'`)) return
-
-  const closingBracketIndex = content.lastIndexOf(']')
-  if (closingBracketIndex === -1) return
-
-  const before = content.slice(0, closingBracketIndex).trimEnd()
-  const after = content.slice(closingBracketIndex)
-  const hasEntries = before.includes('(await import(')
-  const separator = hasEntries ? ',\n' : '\n'
-
-  content = before + separator + newEntry + '\n' + after
-  writeFileSync(toolFilePath, content, 'utf-8')
-}
-
-function removeFromToolFile(baseDir: string, agentId: string, toolName: string): void {
-  const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
-  if (!existsSync(toolFilePath)) return
-
-  let content = readFileSync(toolFilePath, 'utf-8')
-  const lines = content.split('\n')
-  const filtered = lines.filter((line) => !line.includes(`'./tools/${toolName}'`))
-  writeFileSync(toolFilePath, filtered.join('\n'), 'utf-8')
-}
-
-function renameInToolFile(baseDir: string, agentId: string, oldName: string, newName: string): void {
-  const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
-  if (!existsSync(toolFilePath)) return
-
-  let content = readFileSync(toolFilePath, 'utf-8')
-  content = content.replace(`'./tools/${oldName}'`, `'./tools/${newName}'`)
-  writeFileSync(toolFilePath, content, 'utf-8')
-}
 
 function formatError(label: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
@@ -136,7 +98,7 @@ async function runToolTest(
 export function createToolManager() {
   const baseDir = resolveBaseDir()
   const globalToolsDir = join(baseDir, 'tools')
-  const agentsDir = join(baseDir, 'agents')
+
 
   return {
     // ── Global tools ──
@@ -197,181 +159,61 @@ export function createToolManager() {
       writer({ type: 'result', ...result })
     },
 
-    getGlobalDeps(id: string): { agentId: string; toolName: string }[] {
-      const globalToolPath = join(globalToolsDir, `${id}.ts`)
-      if (!existsSync(globalToolPath)) {
-        throw new AgentError('NOT_FOUND', `Global tool "${id}" not found`)
+    // ── Agent ↔ Global tool linking ──
+
+    listLinkedTools(agentId: string): string[] {
+      const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
+      if (!existsSync(toolFilePath)) return []
+
+      const content = readFileSync(toolFilePath, 'utf-8')
+      const importPattern = /\(await import\(['"]\.\.\/\.\.\/tools\/([^'"]+)['"]\)\)\.default/g
+      const linked: string[] = []
+      let match: RegExpExecArray | null
+      while ((match = importPattern.exec(content)) !== null) {
+        linked.push(match[1])
       }
-
-      const deps: { agentId: string; toolName: string }[] = []
-      if (!existsSync(agentsDir)) return deps
-
-      const agents = readdirSync(agentsDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name)
-
-      for (const agentId of agents) {
-        const toolsDir = join(agentsDir, agentId, 'tools')
-        if (!existsSync(toolsDir)) continue
-        for (const file of readdirSync(toolsDir, { withFileTypes: true })) {
-          if (!file.name.endsWith('.ts')) continue
-          const filePath = join(toolsDir, file.name)
-          if (lstatSync(filePath).isSymbolicLink()) {
-            const target = readlinkSync(filePath)
-            if (target.endsWith(`/${id}.ts`) || target.endsWith(`\\${id}.ts`)) {
-              deps.push({ agentId, toolName: file.name.replace(/\.ts$/, '') })
-            }
-          }
-        }
-      }
-      return deps
+      return linked
     },
 
-    // ── Agent tools ──
-
-    listForAgent(agentId: string): ToolInfo[] {
-      const toolsDir = join(agentsDir, agentId, 'tools')
-      try {
-        return readdirSync(toolsDir)
-          .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-          .sort()
-          .map((file) => {
-            const filePath = join(toolsDir, file)
-            let isSymlink = false
-            try { isSymlink = lstatSync(filePath).isSymbolicLink() } catch {}
-            const name = file.replace(/\.ts$/, '')
-            let content: string | undefined
-            try { content = readFileSync(filePath, 'utf-8') } catch {}
-            return { id: name, name, content, symlink: isSymlink || undefined }
-          })
-      } catch {
-        return []
+    linkTool(agentId: string, toolName: string): void {
+      const globalPath = join(globalToolsDir, `${toolName}.ts`)
+      if (!existsSync(globalPath)) {
+        throw new AgentError('NOT_FOUND', `Global tool "${toolName}" not found`)
       }
+
+      const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
+      if (!existsSync(toolFilePath)) {
+        throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
+      }
+
+      let content = readFileSync(toolFilePath, 'utf-8')
+      if (content.includes(`'../../tools/${toolName}'`)) return
+
+      const newEntry = `    (await import('../../tools/${toolName}')).default`
+      const closingBracketIndex = content.lastIndexOf(']')
+      if (closingBracketIndex === -1) return
+
+      const before = content.slice(0, closingBracketIndex).trimEnd()
+      const after = content.slice(closingBracketIndex)
+      const hasEntries = before.includes('(await import(')
+      const separator = hasEntries ? ',\n' : '\n'
+
+      content = before + separator + newEntry + '\n' + after
+      writeFileSync(toolFilePath, content, 'utf-8')
     },
 
-    createForAgent(agentId: string, name: string, opts?: { linkGlobal?: boolean }): { id: string; name: string; symlink: boolean } {
-      const toolsDir = join(agentsDir, agentId, 'tools')
-      const linkPath = join(toolsDir, `${name}.ts`)
-
-      if (existsSync(linkPath)) {
-        throw new AgentError('ALREADY_EXISTS', `Tool "${name}" already exists`)
+    unlinkTool(agentId: string, toolName: string): void {
+      const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
+      if (!existsSync(toolFilePath)) {
+        throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
       }
 
-      mkdirSync(toolsDir, { recursive: true })
-
-      if (opts?.linkGlobal) {
-        const globalPath = join(globalToolsDir, `${name}.ts`)
-        if (!existsSync(globalPath)) {
-          throw new AgentError('NOT_FOUND', `Global tool "${name}" not found`)
-        }
-        const relativeTarget = join('..', '..', '..', 'tools', `${name}.ts`)
-        symlinkSync(relativeTarget, linkPath)
-      } else {
-        writeFileSync(linkPath, NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
-      }
-
-      addToToolFile(baseDir, agentId, name)
-      return { id: name, name, symlink: !!opts?.linkGlobal }
+      let content = readFileSync(toolFilePath, 'utf-8')
+      const lines = content.split('\n')
+      const filtered = lines.filter((line) => !line.includes(`'../../tools/${toolName}'`))
+      writeFileSync(toolFilePath, filtered.join('\n'), 'utf-8')
     },
 
-    updateForAgent(agentId: string, toolId: string, content: string): void {
-      const filePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
-      const stat = lstatSync(filePath, { throwIfNoEntry: false })
-      if (stat?.isSymbolicLink()) {
-        throw new AgentError('INVALID_INPUT', 'Cannot edit a symlinked tool')
-      }
-      writeFileSync(filePath, content, 'utf-8')
-    },
-
-    deleteForAgent(agentId: string, toolId: string): void {
-      const filePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
-      if (!existsSync(filePath)) {
-        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
-      }
-      unlinkSync(filePath)
-      removeFromToolFile(baseDir, agentId, toolId)
-    },
-
-    copyForAgent(agentId: string, toolId: string): { id: string; name: string; symlink: boolean; content: string } {
-      const toolPath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
-      if (!existsSync(toolPath)) {
-        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
-      }
-      if (!lstatSync(toolPath).isSymbolicLink()) {
-        throw new AgentError('INVALID_INPUT', `Tool "${toolId}" is already a local file`)
-      }
-      const content = readFileSync(toolPath, 'utf-8')
-      unlinkSync(toolPath)
-      writeFileSync(toolPath, content, 'utf-8')
-      return { id: toolId, name: toolId, symlink: false, content }
-    },
-
-    promoteForAgent(agentId: string, toolId: string, globalName?: string): { id: string; name: string; symlink: boolean } {
-      const finalName = globalName || toolId
-      const toolsDir = join(agentsDir, agentId, 'tools')
-      const agentToolPath = join(toolsDir, `${toolId}.ts`)
-
-      if (!existsSync(agentToolPath)) {
-        throw new AgentError('NOT_FOUND', `Tool "${toolId}" not found`)
-      }
-      if (lstatSync(agentToolPath).isSymbolicLink()) {
-        throw new AgentError('INVALID_INPUT', `Tool "${toolId}" is already a global link`)
-      }
-
-      const globalToolPath = join(globalToolsDir, `${finalName}.ts`)
-      if (existsSync(globalToolPath)) {
-        throw new AgentError('ALREADY_EXISTS', `A global tool named "${finalName}" already exists`)
-      }
-
-      mkdirSync(globalToolsDir, { recursive: true })
-      copyFileSync(agentToolPath, globalToolPath)
-      unlinkSync(agentToolPath)
-
-      const newSymlinkPath = join(toolsDir, `${finalName}.ts`)
-      const relativeTarget = join('..', '..', '..', 'tools', `${finalName}.ts`)
-      symlinkSync(relativeTarget, newSymlinkPath)
-
-      if (finalName !== toolId) {
-        renameInToolFile(baseDir, agentId, toolId, finalName)
-      }
-
-      return { id: finalName, name: finalName, symlink: true }
-    },
-
-    async testForAgent(agentId: string, toolId: string, input: Record<string, unknown>): Promise<TestResult> {
-      const absolutePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
-      const label = `agent/agents/${agentId}/tools/${toolId}.ts`
-
-      const stat = lstatSync(absolutePath, { throwIfNoEntry: false })
-      if (stat?.isSymbolicLink()) {
-        throw new AgentError('INVALID_INPUT', 'Cannot run test for a symlinked tool')
-      }
-
-      return runToolTest({ absolutePath, label, input, allowCallable: true })
-    },
-
-    async streamTestForAgent(
-      agentId: string,
-      toolId: string,
-      input: Record<string, unknown>,
-      writer: TestStreamWriter,
-    ): Promise<void> {
-      const absolutePath = join(agentsDir, agentId, 'tools', `${toolId}.ts`)
-      const label = `agent/agents/${agentId}/tools/${toolId}.ts`
-
-      const stat = lstatSync(absolutePath, { throwIfNoEntry: false })
-      if (stat?.isSymbolicLink()) {
-        writer({
-          type: 'result',
-          success: false,
-          error: 'Cannot run test for a symlinked tool',
-        })
-        return
-      }
-
-      const result = await runToolTest({ absolutePath, label, input, allowCallable: true, writer })
-      writer({ type: 'result', ...result })
-    },
   }
 }
 

@@ -108,13 +108,13 @@ function openAddToolModal() {
 const removeModalOpen = ref(false)
 const toolToRemove = ref<ToolFile | null>(null)
 const removeDepsStatus = ref<'checking' | 'found' | 'safe'>('checking')
-const removeDeps = ref<{ agentId: string; toolName: string }[]>([])
+const removeDeps = ref<{ agentId: string; agentName: string }[]>([])
 const removeLoading = ref(false)
 
 async function checkDeps(tool: ToolFile) {
   removeDepsStatus.value = 'checking'
   try {
-    const res = await $fetch<{ deps: { agentId: string; toolName: string }[] }>(`/api/tools/${tool.id}/deps`)
+    const res = await $fetch<{ deps: { agentId: string; agentName: string }[] }>(`/api/tools/${tool.id}/deps`)
     if (res.deps.length > 0) {
       removeDeps.value = res.deps
       removeDepsStatus.value = 'found'
@@ -246,8 +246,8 @@ async function confirmRemove() {
         <ul class="space-y-2 border border-default rounded-lg divide-y divide-default">
           <li v-for="dep in removeDeps" :key="dep.agentId" class="p-3 flex items-center justify-between">
             <div>
-              <p class="font-medium text-highlighted">{{ dep.agentId }}</p>
-              <p class="text-xs text-dimmed">Linked as: {{ dep.toolName }}.ts</p>
+              <p class="font-medium text-highlighted">{{ dep.agentName }}</p>
+              <p class="text-xs text-dimmed">Agent ID: {{ dep.agentId }}</p>
             </div>
             <UButton
               color="neutral"

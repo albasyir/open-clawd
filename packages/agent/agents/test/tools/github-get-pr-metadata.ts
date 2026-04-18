@@ -1,1 +1,0 @@
-../../../tools/github-get-pr-metadata.ts

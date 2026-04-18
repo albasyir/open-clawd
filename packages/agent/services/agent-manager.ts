@@ -1,4 +1,5 @@
 import { AIMessageChunk } from '@langchain/core/messages'
+import { Command } from '@langchain/langgraph'
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -9,6 +10,17 @@ import { resolveBaseDir } from './resolve-base'
 import { registerAgent, unregisterAgent } from './agent-registry'
 
 type AgentChatStreamWriter = (chunk: unknown) => void
+type AgentApprovalDecision =
+  | { type: 'approve' }
+  | { type: 'edit', editedAction: { name: string, args: Record<string, unknown> } }
+  | { type: 'reject', message?: string }
+  | { type: 'comment', message: string }
+type AgentChatResume = {
+  decisions: AgentApprovalDecision[]
+}
+type AgentChatInput =
+  | { message: string, resume?: never }
+  | { message?: never, resume: AgentChatResume }
 type AgentToolStreamEvent = {
   event: 'on_tool_start' | 'on_tool_event' | 'on_tool_end' | 'on_tool_error'
   toolCallId?: string
@@ -63,6 +75,39 @@ function extractReplyFromState(state: unknown): string {
 
   const lastMessage = messages.at(-1)
   return lastMessage ? extractTextContent(lastMessage.content) : ''
+}
+
+function extractInterrupt(payload: unknown): unknown | null {
+  if (!payload || typeof payload !== 'object') return null
+
+  const interrupts = (payload as { __interrupt__?: unknown }).__interrupt__
+  if (!Array.isArray(interrupts) || interrupts.length === 0) return null
+
+  const firstInterrupt = interrupts[0]
+  if (!firstInterrupt || typeof firstInterrupt !== 'object') return firstInterrupt ?? null
+
+  return {
+    id: (firstInterrupt as { id?: unknown }).id,
+    value: (firstInterrupt as { value?: unknown }).value,
+  }
+}
+
+function normalizeApprovalResume(resume: AgentChatResume): AgentChatResume {
+  return {
+    decisions: resume.decisions.map((decision) => {
+      if (decision.type !== 'comment') return decision
+
+      return {
+        type: 'reject',
+        message: [
+          'Human approval comment for the blocked shell_exec call:',
+          decision.message.trim(),
+          '',
+          'Evaluate this feedback before continuing. If a shell command is still needed, call shell_exec again with revised arguments so it can be approved. Do not execute the previously requested shell command.',
+        ].join('\n'),
+      }
+    }),
+  }
 }
 
 const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
@@ -156,7 +201,7 @@ export function createAgentManager() {
     async streamAgent(
       id: string,
       threadId: string,
-      message: string,
+      input: AgentChatInput,
       writer: AgentChatStreamWriter,
     ): Promise<void> {
       const agentData = agents[id]
@@ -170,20 +215,37 @@ export function createAgentManager() {
         configurable: { thread_id: threadId }
       }
 
+      const agentInput = input.resume
+        ? new Command({ resume: normalizeApprovalResume(input.resume) })
+        : { messages: [{ role: 'user' as const, content: input.message! }] }
+
       const stream = await agent.stream(
-        { messages: [{ role: 'user' as const, content: message }] },
+        agentInput,
         {
           ...config,
-          streamMode: ['messages', 'tools', 'custom']
+          streamMode: ['messages', 'tools', 'custom', 'updates']
         },
       )
 
       let streamedReply = ''
+      let interrupted = false
 
       for await (const chunk of stream) {
         if (!Array.isArray(chunk) || chunk.length < 2) continue
 
         const [mode, payload] = chunk as [string, unknown]
+
+        if (mode === 'updates') {
+          const interrupt = extractInterrupt(payload)
+          if (interrupt) {
+            interrupted = true
+            writer({
+              type: 'interrupt',
+              data: interrupt
+            })
+          }
+          continue
+        }
 
         if (mode === 'messages' && Array.isArray(payload)) {
           const [messageChunk] = payload as [{ content?: unknown; type?: string }]
@@ -220,6 +282,8 @@ export function createAgentManager() {
           })
         }
       }
+
+      if (interrupted) return
 
       const finalState = await agent.getState(config)
       const finalReply = extractReplyFromState(finalState)

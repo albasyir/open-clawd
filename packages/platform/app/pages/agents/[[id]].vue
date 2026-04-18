@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { breakpointsTailwind } from '@vueuse/core'
-import type { AgentConversation, ChatMessage, ChatTimelineItem } from '~/types'
+import type { AgentConversation, ChatApprovalAction, ChatApprovalReviewConfig, ChatMessage, ChatPendingApproval, ChatTimelineItem } from '~/types'
 
 type ChatToolStreamEvent = {
   event: 'on_tool_start' | 'on_tool_event' | 'on_tool_end' | 'on_tool_error'
@@ -18,8 +18,32 @@ type ChatStreamChunk
     | { type: 'thinking', delta: string }
     | { type: 'tool', event: ChatToolStreamEvent }
     | { type: 'progress', data: unknown }
+    | { type: 'interrupt', data: { id?: string, value?: unknown } }
     | { type: 'result', reply: string }
     | { type: 'error', message: string }
+
+type ChatApprovalDecision =
+  | { type: 'approve' }
+  | { type: 'edit', editedAction: ChatApprovalEditedAction }
+  | { type: 'comment', message: string }
+  | { type: 'reject', message?: string }
+
+type ChatApprovalEditedAction = {
+  name: string
+  args: Record<string, unknown>
+}
+
+type AgentChatRequestBody =
+  | { thread_id: string, message: string, stream: true }
+  | { thread_id: string, resume: { decisions: ChatApprovalDecision[] }, stream: true }
+
+type AgentStreamConversation = {
+  id: string
+  agentId: string
+  agent: {
+    name: string
+  }
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -105,6 +129,7 @@ watch(threads, () => {
 
 const toast = useToast()
 const sendLoading = ref(false)
+const shellRejectedMessage = 'Shell command rejected by user. Do not call shell_exec again for this request.'
 
 function updateConversationMessages(conversationId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) {
   const currentMessages = agentMessagesMap.value[conversationId] ?? selectedConversation.value?.messages ?? []
@@ -131,19 +156,66 @@ function appendTimelineDetail(current: string, label: string, data?: unknown): s
   return current ? `${current}\n\n${details}` : details
 }
 
-async function onSend(message: string) {
-  const conversation = selectedConversation.value
-  if (!conversation) return
+function normalizePendingApproval(interrupt: { id?: string, value?: unknown }): ChatPendingApproval {
+  const value = interrupt.value && typeof interrupt.value === 'object'
+    ? interrupt.value as Record<string, unknown>
+    : {}
+  const actionRequests = Array.isArray(value.actionRequests)
+    ? value.actionRequests
+    : Array.isArray(value.action_requests)
+      ? value.action_requests
+      : []
+  const reviewConfigs = Array.isArray(value.reviewConfigs)
+    ? value.reviewConfigs
+    : Array.isArray(value.review_configs)
+      ? value.review_configs
+      : []
+
+  return {
+    id: interrupt.id,
+    actionRequests: actionRequests.map((action): ChatApprovalAction => {
+      const item = action && typeof action === 'object' ? action as Record<string, unknown> : {}
+      const name = typeof item.name === 'string'
+        ? item.name
+        : typeof item.action === 'string'
+          ? item.action
+          : 'tool'
+
+      return {
+        name,
+        args: item.args && typeof item.args === 'object' ? item.args as Record<string, unknown> : {},
+        description: typeof item.description === 'string' ? item.description : undefined
+      }
+    }),
+    reviewConfigs: reviewConfigs.map((config): ChatApprovalReviewConfig => {
+      const item = config && typeof config === 'object' ? config as Record<string, unknown> : {}
+      const allowedDecisions = Array.isArray(item.allowedDecisions)
+        ? item.allowedDecisions
+        : Array.isArray(item.allowed_decisions)
+          ? item.allowed_decisions
+          : ['approve', 'reject']
+
+      return {
+        actionName: typeof item.actionName === 'string'
+          ? item.actionName
+          : typeof item.action_name === 'string'
+            ? item.action_name
+            : 'tool',
+        allowedDecisions: allowedDecisions.filter(decision =>
+          decision === 'approve' || decision === 'edit' || decision === 'reject'
+        ),
+        argsSchema: item.argsSchema && typeof item.argsSchema === 'object'
+          ? item.argsSchema as Record<string, unknown>
+          : undefined
+      }
+    }),
+    state: 'pending'
+  }
+}
+
+async function runAgentStream(conversation: AgentStreamConversation, body: AgentChatRequestBody) {
   const conversationId = conversation.id
   const agentName = conversation.agent.name
-
-  const userMsg: ChatMessage = {
-    id: `${conversationId}-u-${Date.now()}`,
-    role: 'user',
-    content: message,
-    date: new Date().toISOString()
-  }
-  updateConversationMessages(conversationId, messages => [...messages, userMsg])
 
   sendLoading.value = true
   const initialAgentMessageId = `${conversationId}-a-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -207,6 +279,7 @@ async function onSend(message: string) {
       thinkingDurationMs: durationMs
     }))
   }
+
   try {
     const response = await fetch(`/api/agents/${conversation.agentId}/chat`, {
       method: 'POST',
@@ -214,7 +287,7 @@ async function onSend(message: string) {
         'content-type': 'application/json',
         'accept': 'application/x-ndjson'
       },
-      body: JSON.stringify({ thread_id: conversation.id, message, stream: true })
+      body: JSON.stringify(body)
     })
 
     if (!response.ok || !response.body) {
@@ -331,6 +404,32 @@ async function onSend(message: string) {
 
     function getActiveToolKey() {
       return activeToolKeys.at(-1) ?? null
+    }
+
+    function showPendingApproval(interrupt: { id?: string, value?: unknown }) {
+      completeThinking()
+      if (currentToolMessageId) finishToolSegment('done')
+
+      const pendingApproval = normalizePendingApproval(interrupt)
+      const approvalMessage: ChatMessage = {
+        id: `${conversationId}-a-approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: 'agent',
+        content: '',
+        date: new Date().toISOString(),
+        pendingApproval,
+        streamState: 'done'
+      }
+
+      if (currentTextMessageId && !currentTextContent && !currentTextThinking) {
+        updateAgentMessage(currentTextMessageId, message => ({
+          ...message,
+          pendingApproval,
+          streamState: 'done'
+        }))
+        resetTextSegment()
+      } else {
+        appendAgentMessage(approvalMessage)
+      }
     }
 
     const handleStreamChunk = (chunk: ChatStreamChunk) => {
@@ -464,6 +563,11 @@ async function onSend(message: string) {
         return
       }
 
+      if (chunk.type === 'interrupt') {
+        showPendingApproval(chunk.data)
+        return
+      }
+
       if (chunk.type === 'result') {
         completeThinking()
         const reply = chunk.reply || currentTextContent || '(No response)'
@@ -544,6 +648,87 @@ async function onSend(message: string) {
   } finally {
     sendLoading.value = false
   }
+}
+
+async function onSend(message: string) {
+  const conversation = selectedConversation.value
+  if (!conversation) return
+
+  const userMsg: ChatMessage = {
+    id: `${conversation.id}-u-${Date.now()}`,
+    role: 'user',
+    content: message,
+    date: new Date().toISOString()
+  }
+  updateConversationMessages(conversation.id, messages => [...messages, userMsg])
+
+  const streamConversation: AgentStreamConversation = {
+    id: conversation.id,
+    agentId: conversation.agentId,
+    agent: { name: conversation.agent.name }
+  }
+  const body: AgentChatRequestBody = { thread_id: conversation.id, message, stream: true }
+  await runAgentStream(streamConversation, body)
+}
+
+async function onApprovalDecision(
+  messageId: string,
+  decisionType: 'approve' | 'edit' | 'comment' | 'reject',
+  payload: ChatApprovalEditedAction[] | string = [],
+) {
+  const conversation = selectedConversation.value
+  if (!conversation || sendLoading.value) return
+
+  const editedActions = Array.isArray(payload) ? payload : []
+  const approvalComment = typeof payload === 'string' ? payload.trim() : ''
+  if (decisionType === 'edit' && editedActions.length === 0) return
+  if (decisionType === 'comment' && !approvalComment) return
+
+  let pendingApproval: ChatPendingApproval | undefined
+  updateConversationMessages(conversation.id, messages =>
+    messages.map((message) => {
+      if (message.id !== messageId || !message.pendingApproval || message.pendingApproval.state !== 'pending') return message
+
+      pendingApproval = message.pendingApproval
+      return {
+        ...message,
+        pendingApproval: {
+          ...message.pendingApproval,
+          state: decisionType === 'approve'
+            ? 'approved'
+            : decisionType === 'edit'
+              ? 'edited'
+              : decisionType === 'comment'
+                ? 'commented'
+                : 'rejected'
+        }
+      }
+    })
+  )
+
+  if (!pendingApproval) return
+
+  const decisions: ChatApprovalDecision[] = pendingApproval.actionRequests.map((_, index) => {
+    if (decisionType === 'approve') return { type: 'approve' }
+    if (decisionType === 'edit') {
+      const editedAction = editedActions[index] ?? editedActions[0]
+      return { type: 'edit', editedAction: editedAction! }
+    }
+    if (decisionType === 'comment') return { type: 'comment', message: approvalComment }
+    return { type: 'reject', message: shellRejectedMessage }
+  })
+
+  const body: AgentChatRequestBody = {
+    thread_id: conversation.id,
+    resume: { decisions },
+    stream: true
+  }
+  const streamConversation: AgentStreamConversation = {
+    id: conversation.id,
+    agentId: conversation.agentId,
+    agent: { name: conversation.agent.name }
+  }
+  await runAgentStream(streamConversation, body)
 }
 
 const breakpoints = useBreakpoints(breakpointsTailwind)
@@ -660,6 +845,7 @@ watch(removeModalOpen, (isOpen) => {
       :send-loading="sendLoading"
       @close="selectedConversationId = null"
       @delete-agent="promptDeleteAgent(displayConversation)"
+      @approval-decision="onApprovalDecision"
       @send="onSend"
     />
     <div v-else class="flex flex-1 flex-col items-center justify-center min-h-0 p-6">
@@ -678,6 +864,7 @@ watch(removeModalOpen, (isOpen) => {
           :send-loading="sendLoading"
           @close="selectedConversationId = null"
           @delete-agent="promptDeleteAgent(displayConversation)"
+          @approval-decision="onApprovalDecision"
           @send="onSend"
         />
       </template>

@@ -1,1 +1,0 @@
-../../../tools/github-pr-url-extractor.ts
