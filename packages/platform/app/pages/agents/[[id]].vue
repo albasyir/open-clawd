@@ -600,7 +600,14 @@ async function runAgentStream(conversation: AgentStreamConversation, body: Agent
         }
 
         if (event.event === 'on_tool_error' && isInterruptToolError(event.error)) {
-          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey() ?? key
+          const activeKey = currentToolTimelineIndexByKey.has(key) ? key : getActiveToolKey()
+          if (!activeKey) {
+            if (currentToolMessageId && currentToolTimeline.length === 0) {
+              removeAgentMessage(currentToolMessageId)
+              resetToolSegment()
+            }
+            return
+          }
 
           upsertTimelineItem(activeKey, existing => ({
             value: existing?.value ?? activeKey,
