@@ -5,6 +5,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { IndentationText, Project, QuoteKind, SyntaxKind } from 'ts-morph'
 import { AgentError } from '../types'
 import type { ToolInfo, TestResult } from '../types'
 import { resolveBaseDir } from './resolve-base'
@@ -169,14 +170,22 @@ export function createToolManager() {
       const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
       if (!existsSync(toolFilePath)) return []
 
-      const content = readFileSync(toolFilePath, 'utf-8')
-      const importPattern = /\(await import\(['"]\.\.\/\.\.\/toolbox\/([^'"]+)['"]\)\)\.default/g
-      const linked: string[] = []
-      let match: RegExpExecArray | null
-      while ((match = importPattern.exec(content)) !== null) {
-        linked.push(match[1])
-      }
-      return linked
+      const project = new Project({
+        manipulationSettings: {
+          indentationText: IndentationText.TwoSpaces,
+          quoteKind: QuoteKind.Single
+        }
+      })
+      const sourceFile = project.addSourceFileAtPath(toolFilePath)
+      
+      return sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)
+        .filter(call => call.getExpression().getKind() === SyntaxKind.ImportKeyword)
+        .map(call => {
+          const arg = call.getArguments()[0]
+          return arg && arg.getKind() === SyntaxKind.StringLiteral ? arg.getLiteralText() : null
+        })
+        .filter(text => text !== null && text.startsWith('../../toolbox/'))
+        .map(text => text!.replace('../../toolbox/', ''))
     },
 
     linkTool(agentId: string, toolName: string): void {
@@ -190,20 +199,27 @@ export function createToolManager() {
         throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
       }
 
-      let content = readFileSync(toolFilePath, 'utf-8')
-      if (content.includes(`'../../toolbox/${toolName}'`)) return
+      const project = new Project({
+        manipulationSettings: {
+          indentationText: IndentationText.TwoSpaces,
+          quoteKind: QuoteKind.Single
+        }
+      })
+      const sourceFile = project.addSourceFileAtPath(toolFilePath)
+      
+      const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
+      if (!exportAssign) return
 
-      const newEntry = `    (await import('../../toolbox/${toolName}')).default`
-      const closingBracketIndex = content.lastIndexOf(']')
-      if (closingBracketIndex === -1) return
+      const arrayLiteral = exportAssign.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
+      if (!arrayLiteral) return
 
-      const before = content.slice(0, closingBracketIndex).trimEnd()
-      const after = content.slice(closingBracketIndex)
-      const hasEntries = before.includes('(await import(')
-      const separator = hasEntries ? ',\n' : '\n'
+      const importPath = `../../toolbox/${toolName}`
+      const existing = arrayLiteral.getElements().some(element => element.getText().includes(importPath))
+      if (existing) return
 
-      content = before + separator + newEntry + '\n' + after
-      writeFileSync(toolFilePath, content, 'utf-8')
+      arrayLiteral.addElement(`(await import('${importPath}')).default`)
+      sourceFile.formatText()
+      sourceFile.saveSync()
     },
 
     unlinkTool(agentId: string, toolName: string): void {
@@ -212,10 +228,30 @@ export function createToolManager() {
         throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
       }
 
-      let content = readFileSync(toolFilePath, 'utf-8')
-      const lines = content.split('\n')
-      const filtered = lines.filter((line) => !line.includes(`'../../toolbox/${toolName}'`))
-      writeFileSync(toolFilePath, filtered.join('\n'), 'utf-8')
+      const project = new Project({
+        manipulationSettings: {
+          indentationText: IndentationText.TwoSpaces,
+          quoteKind: QuoteKind.Single
+        }
+      })
+      const sourceFile = project.addSourceFileAtPath(toolFilePath)
+      
+      const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
+      if (!exportAssign) return
+
+      const arrayLiteral = exportAssign.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
+      if (!arrayLiteral) return
+
+      const importPath = `../../toolbox/${toolName}`
+      
+      const elementsToRemove = arrayLiteral.getElements().filter(element => element.getText().includes(importPath))
+      // Remove elements in reverse order to preserve indices of earlier elements
+      for (let i = elementsToRemove.length - 1; i >= 0; i--) {
+        arrayLiteral.removeElement(elementsToRemove[i])
+      }
+      
+      sourceFile.formatText()
+      sourceFile.saveSync()
     },
 
   }
