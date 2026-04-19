@@ -59,6 +59,8 @@ const installingSkills = ref<Set<string>>(new Set())
 const uninstallingSkills = ref<Set<string>>(new Set())
 const installedSkills = ref<Set<string>>(new Set())
 const checkingInstallation = ref(false)
+const pendingInstallSkill = ref<SkillSearchResult | null>(null)
+const installAcknowledged = ref(false)
 
 const trimmedQuery = computed(() => query.value.trim())
 const loading = computed(() => isDebouncing.value || isFetching.value)
@@ -94,6 +96,18 @@ function clearSearch() {
   void router.replace({ path: '/skills' })
 }
 
+function syncSearchRoute(searchQuery: string, searchLimit: number) {
+  void router.replace({
+    path: '/skills',
+    query: searchQuery
+      ? {
+          q: searchQuery,
+          limit: searchLimit.toString()
+        }
+      : undefined
+  })
+}
+
 async function searchSkills(searchQuery: string, searchLimit: number, runId: number) {
   isFetching.value = true
   error.value = null
@@ -112,14 +126,6 @@ async function searchSkills(searchQuery: string, searchLimit: number, runId: num
     skills.value = result.skills
     hasSearched.value = true
     void checkSkillInstallation(result.skills)
-
-    await router.replace({
-      path: '/skills',
-      query: {
-        q: searchQuery,
-        limit: searchLimit.toString()
-      }
-    })
   } catch (err) {
     if (runId !== searchRunId) return
 
@@ -145,6 +151,7 @@ function scheduleSearch() {
   searchRunId += 1
   clearDebounceTimer()
   isFetching.value = false
+  syncSearchRoute(searchQuery, searchLimit)
 
   if (searchQuery.length > 200) {
     isDebouncing.value = false
@@ -256,6 +263,23 @@ async function installSkill(skill: SkillSearchResult) {
   }
 }
 
+function openInstallDialog(skill: SkillSearchResult) {
+  if (installingSkills.value.has(skill.id) || installedSkills.value.has(skill.id)) return
+  installAcknowledged.value = false
+  pendingInstallSkill.value = skill
+}
+
+async function confirmInstallSkill() {
+  const skill = pendingInstallSkill.value
+  if (!skill) return
+
+  await installSkill(skill)
+  if (installedSkills.value.has(skill.id)) {
+    pendingInstallSkill.value = null
+    installAcknowledged.value = false
+  }
+}
+
 async function uninstallSkill(skill: SkillSearchResult) {
   if (uninstallingSkills.value.has(skill.id) || !installedSkills.value.has(skill.id)) return
 
@@ -291,7 +315,7 @@ function toggleSkillInstall(skill: SkillSearchResult) {
   if (installedSkills.value.has(skill.id)) {
     void uninstallSkill(skill)
   } else {
-    void installSkill(skill)
+    openInstallDialog(skill)
   }
 }
 
@@ -404,12 +428,12 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="flex items-center justify-end gap-2">
-	                <UButton
-	                  :icon="installedSkills.has(skill.id) ? 'i-lucide-trash-2' : 'i-lucide-download'"
-	                  :label="checkingInstallation ? 'Checking' : installedSkills.has(skill.id) ? 'Uninstall' : 'Install'"
-	                  :loading="installingSkills.has(skill.id) || uninstallingSkills.has(skill.id) || checkingInstallation"
-	                  :disabled="checkingInstallation"
-	                  :color="installedSkills.has(skill.id) ? 'error' : 'primary'"
+                <UButton
+                  :icon="installedSkills.has(skill.id) ? 'i-lucide-trash-2' : 'i-lucide-download'"
+                  :label="checkingInstallation ? 'Checking' : installedSkills.has(skill.id) ? 'Uninstall' : 'Install'"
+                  :loading="installingSkills.has(skill.id) || uninstallingSkills.has(skill.id) || checkingInstallation"
+                  :disabled="checkingInstallation"
+                  :color="installedSkills.has(skill.id) ? 'error' : 'primary'"
                   :variant="installedSkills.has(skill.id) ? 'soft' : 'solid'"
                   size="sm"
                   @click="toggleSkillInstall(skill)"
@@ -417,6 +441,7 @@ onBeforeUnmount(() => {
                 <UTooltip text="Open GitHub repository">
                   <UButton
                     icon="i-lucide-github"
+                    label="GitHub"
                     color="neutral"
                     variant="ghost"
                     size="sm"
@@ -427,6 +452,7 @@ onBeforeUnmount(() => {
                 <UTooltip text="Open on skills.sh">
                   <UButton
                     icon="i-lucide-external-link"
+                    label="Skills"
                     color="neutral"
                     variant="ghost"
                     size="sm"
@@ -441,4 +467,68 @@ onBeforeUnmount(() => {
       </div>
     </template>
   </UDashboardPanel>
+
+  <UModal v-model:open="pendingInstallSkill" title="Install skill">
+    <template #body>
+      <div v-if="pendingInstallSkill" class="space-y-4 p-4">
+        <div class="space-y-1">
+          <p class="text-sm font-semibold text-highlighted">
+            {{ pendingInstallSkill.name }}
+          </p>
+          <p class="break-all font-mono text-xs text-dimmed">
+            {{ pendingInstallSkill.id }}
+          </p>
+        </div>
+
+        <dl class="grid gap-3 text-sm sm:grid-cols-2">
+          <div class="min-w-0">
+            <dt class="text-xs text-dimmed">Skill ID</dt>
+            <dd class="truncate font-mono text-toned">{{ pendingInstallSkill.skillId }}</dd>
+          </div>
+          <div class="min-w-0">
+            <dt class="text-xs text-dimmed">Source</dt>
+            <dd class="truncate font-mono text-toned">{{ pendingInstallSkill.source }}</dd>
+          </div>
+          <div class="min-w-0">
+            <dt class="text-xs text-dimmed">Installs</dt>
+            <dd class="text-toned">{{ formatInstalls(pendingInstallSkill.installs) }}</dd>
+          </div>
+        </dl>
+
+        <UCheckbox
+          v-model="installAcknowledged"
+        >
+          <template #label>
+            <span>
+              I have reviewed and accept the Publisher and Security Audits on
+              <ULink
+                :to="`https://skills.sh/${pendingInstallSkill.id}`"
+                target="_blank"
+                class="text-primary underline-offset-2 hover:underline"
+              >
+                skills.sh
+              </ULink>
+            </span>
+          </template>
+        </UCheckbox>
+
+        <div class="flex justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            label="Cancel"
+            :disabled="installingSkills.has(pendingInstallSkill.id)"
+            @click="pendingInstallSkill = null; installAcknowledged = false"
+          />
+          <UButton
+            icon="i-lucide-download"
+            label="Install"
+            :loading="installingSkills.has(pendingInstallSkill.id)"
+            :disabled="!installAcknowledged"
+            @click="confirmInstallSkill"
+          />
+        </div>
+      </div>
+    </template>
+  </UModal>
 </template>

@@ -12,6 +12,9 @@ type GithubContentResponse = {
   html_url?: unknown
 }
 
+const githubRepoPattern = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i
+const skillIdPattern = /^[a-z0-9_.-]+$/i
+
 const skillPathCandidates = (skillId: string) => [
   `${skillId}/SKILL.md`,
   `skills/${skillId}/SKILL.md`,
@@ -102,9 +105,19 @@ export function createSkillManager() {
   const skillsDir = join(resolveBaseDir(), 'skills')
 
   function validateInput(input: SkillInstallInput) {
+    if (!githubRepoPattern.test(input.source) || !skillIdPattern.test(input.skillId)) {
+      throw new AgentError('INVALID_INPUT', 'Skill source or skillId is not installable')
+    }
+
     if (input.id !== `${input.source}/${input.skillId}`) {
       throw new AgentError('INVALID_INPUT', 'Skill id must match source and skillId')
     }
+  }
+
+  function canCheckInstall(input: SkillInstallInput) {
+    return githubRepoPattern.test(input.source)
+      && skillIdPattern.test(input.skillId)
+      && input.id === `${input.source}/${input.skillId}`
   }
 
   function getInstallDir(input: SkillInstallInput) {
@@ -154,7 +167,9 @@ export function createSkillManager() {
 
     async checkSkillInstallation(skills: SkillInstallInput[]): Promise<SkillInstallationStatus[]> {
       return Promise.all(skills.map(async (skill) => {
-        validateInput(skill)
+        if (!canCheckInstall(skill)) {
+          return { ...skill, installed: false }
+        }
 
         try {
           await access(getInstallDir(skill))

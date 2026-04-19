@@ -1,15 +1,10 @@
 import { AgentError } from 'clawpro-agent'
 import { z } from 'zod'
 
-const githubRepoSchema = z.string().regex(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i)
-const skillIdSchema = z.string().regex(/^[a-z0-9_.-]+$/i)
-
 const skillSchema = z.object({
   id: z.string().min(1),
-  skillId: skillIdSchema,
-  source: githubRepoSchema
-}).refine(value => value.id === `${value.source}/${value.skillId}`, {
-  message: 'Skill id must match source and skillId'
+  skillId: z.string().min(1),
+  source: z.string().min(1)
 })
 
 const installationSchema = z.object({
