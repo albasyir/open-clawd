@@ -2,8 +2,6 @@ import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { Octokit } from 'octokit'
 
-// test
-
 const githubPullRequestMetadataSchema = z.object({
   owner: z.string().trim().min(1),
   repo: z.string().trim().min(1),

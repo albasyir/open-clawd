@@ -73,6 +73,19 @@ export interface ModelFile {
   content?: string
 }
 
+export interface SkillSearchResult {
+  id: string
+  skillId: string
+  name: string
+  installs: number
+  source: string
+}
+
+export interface SkillSearchResponse {
+  searchType: string
+  skills: SkillSearchResult[]
+}
+
 export type ChatMessageRole = 'user' | 'agent'
 
 export interface ChatTimelineItem {

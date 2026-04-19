@@ -6,36 +6,44 @@ const toast = useToast()
 const open = ref(false)
 
 const links = [[
-{
-  label: 'Channels',
-  icon: 'i-lucide-channel',
-  to: '/channels',
-  onSelect: () => {
-    open.value = false
+  {
+    label: 'Channels',
+    icon: 'i-lucide-channel',
+    to: '/channels',
+    onSelect: () => {
+      open.value = false
+    }
+  },
+  {
+    label: 'Agents',
+    icon: 'i-lucide-users',
+    to: '/agents',
+    onSelect: () => {
+      open.value = false
+    }
+  }, {
+    label: 'Skills',
+    icon: 'i-lucide-sparkles',
+    to: '/skills',
+    onSelect: () => {
+      open.value = false
+    }
+  }, {
+    label: 'Toolbox',
+    icon: 'i-lucide-wrench',
+    to: '/toolbox',
+    onSelect: () => {
+      open.value = false
+    }
+  }, {
+    label: 'Models',
+    icon: 'i-lucide-box',
+    to: '/models',
+    onSelect: () => {
+      open.value = false
+    }
   }
-},  
-{
-  label: 'Agents',
-  icon: 'i-lucide-users',
-  to: '/agents',
-  onSelect: () => {
-    open.value = false
-  }
-}, {
-  label: 'Toolbox',
-  icon: 'i-lucide-wrench',
-  to: '/toolbox',
-  onSelect: () => {
-    open.value = false
-  }
-}, {
-  label: 'Models',
-  icon: 'i-lucide-box',
-  to: '/models',
-  onSelect: () => {
-    open.value = false
-  }
-}], [{
+], [{
   label: 'Feedback',
   icon: 'i-lucide-message-circle',
   to: '/redirect/feedback',

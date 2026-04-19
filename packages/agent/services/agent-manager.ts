@@ -30,6 +30,17 @@ type AgentToolStreamEvent = {
   output?: unknown
   error?: unknown
 }
+type CheckpointToolCall = {
+  id?: string
+  name: string
+  args: Record<string, unknown>
+}
+type CheckpointPendingApproval = {
+  id?: string
+  actionRequests: Array<{ name: string, args: Record<string, unknown>, description?: string }>
+  reviewConfigs: Array<{ actionName: string, allowedDecisions: Array<'approve' | 'edit' | 'reject'>, argsSchema?: Record<string, unknown> }>
+  state: 'pending'
+}
 
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content
@@ -75,6 +86,278 @@ function extractReplyFromState(state: unknown): string {
 
   const lastMessage = messages.at(-1)
   return lastMessage ? extractTextContent(lastMessage.content) : ''
+}
+
+function getMessageType(message: unknown): string {
+  if (!message || typeof message !== 'object') return ''
+
+  const item = message as { type?: unknown, _getType?: () => unknown, getType?: () => unknown }
+  if (typeof item.type === 'string') return item.type
+
+  try {
+    const type = item._getType?.() ?? item.getType?.()
+    return typeof type === 'string' ? type : ''
+  } catch {
+    return ''
+  }
+}
+
+function getStateMessages(state: unknown): unknown[] {
+  if (!state || typeof state !== 'object') return []
+
+  const values = 'values' in state && state.values && typeof state.values === 'object'
+    ? state.values
+    : state
+  const messages = (values as { messages?: unknown }).messages
+  return Array.isArray(messages) ? messages : []
+}
+
+function getStateInterrupts(state: unknown): Array<{ id?: string, value?: unknown }> {
+  if (!state || typeof state !== 'object') return []
+
+  const tasks = (state as { tasks?: unknown }).tasks
+  if (!Array.isArray(tasks)) return []
+
+  return tasks.flatMap((task) => {
+    const interrupts = task && typeof task === 'object'
+      ? (task as { interrupts?: unknown }).interrupts
+      : undefined
+    if (!Array.isArray(interrupts)) return []
+
+    return interrupts.map((interrupt) => {
+      if (!interrupt || typeof interrupt !== 'object') return { value: interrupt }
+
+      return {
+        id: typeof (interrupt as { id?: unknown }).id === 'string'
+          ? (interrupt as { id: string }).id
+          : undefined,
+        value: (interrupt as { value?: unknown }).value,
+      }
+    })
+  })
+}
+
+function parseToolArgs(args: unknown): Record<string, unknown> {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return args as Record<string, unknown>
+  if (typeof args !== 'string') return {}
+
+  try {
+    const parsed = JSON.parse(args)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function extractToolCalls(message: unknown): CheckpointToolCall[] {
+  if (!message || typeof message !== 'object') return []
+
+  const item = message as {
+    tool_calls?: unknown
+    additional_kwargs?: { tool_calls?: unknown }
+  }
+  const toolCalls = Array.isArray(item.tool_calls)
+    ? item.tool_calls
+    : Array.isArray(item.additional_kwargs?.tool_calls)
+      ? item.additional_kwargs.tool_calls
+      : []
+
+  return toolCalls.map((toolCall): CheckpointToolCall | null => {
+    if (!toolCall || typeof toolCall !== 'object') return null
+
+    const call = toolCall as {
+      id?: unknown
+      name?: unknown
+      args?: unknown
+      function?: { name?: unknown, arguments?: unknown }
+    }
+    const name = typeof call.name === 'string'
+      ? call.name
+      : typeof call.function?.name === 'string'
+        ? call.function.name
+        : ''
+    if (!name) return null
+
+    return {
+      id: typeof call.id === 'string' ? call.id : undefined,
+      name,
+      args: parseToolArgs(call.args ?? call.function?.arguments),
+    }
+  }).filter((toolCall): toolCall is CheckpointToolCall => toolCall != null)
+}
+
+function normalizeCheckpointApproval(interrupt: { id?: string, value?: unknown }): CheckpointPendingApproval {
+  const value = interrupt.value && typeof interrupt.value === 'object'
+    ? interrupt.value as Record<string, unknown>
+    : {}
+  const actionRequests = Array.isArray(value.actionRequests)
+    ? value.actionRequests
+    : Array.isArray(value.action_requests)
+      ? value.action_requests
+      : []
+  const reviewConfigs = Array.isArray(value.reviewConfigs)
+    ? value.reviewConfigs
+    : Array.isArray(value.review_configs)
+      ? value.review_configs
+      : []
+
+  return {
+    id: interrupt.id,
+    actionRequests: actionRequests.map((action) => {
+      const item = action && typeof action === 'object' ? action as Record<string, unknown> : {}
+      const name = typeof item.name === 'string'
+        ? item.name
+        : typeof item.action === 'string'
+          ? item.action
+          : 'tool'
+
+      return {
+        name,
+        args: parseToolArgs(item.args),
+        description: typeof item.description === 'string' ? item.description : undefined,
+      }
+    }),
+    reviewConfigs: reviewConfigs.map((config) => {
+      const item = config && typeof config === 'object' ? config as Record<string, unknown> : {}
+      const allowedDecisions = Array.isArray(item.allowedDecisions)
+        ? item.allowedDecisions
+        : Array.isArray(item.allowed_decisions)
+          ? item.allowed_decisions
+          : ['approve', 'reject']
+
+      return {
+        actionName: typeof item.actionName === 'string'
+          ? item.actionName
+          : typeof item.action_name === 'string'
+            ? item.action_name
+            : 'tool',
+        allowedDecisions: allowedDecisions.filter((decision): decision is 'approve' | 'edit' | 'reject' =>
+          decision === 'approve' || decision === 'edit' || decision === 'reject'
+        ),
+        argsSchema: item.argsSchema && typeof item.argsSchema === 'object'
+          ? item.argsSchema as Record<string, unknown>
+          : undefined,
+      }
+    }),
+    state: 'pending',
+  }
+}
+
+function createChatMessageId(agentId: string, index: number, suffix: string): string {
+  return `${agentId}-checkpoint-${index}-${suffix}`
+}
+
+function mapCheckpointStateToChatMessages(agentId: string, state: unknown): unknown[] {
+  const messages = getStateMessages(state)
+  const date = typeof (state as { createdAt?: unknown } | null)?.createdAt === 'string'
+    ? (state as { createdAt: string }).createdAt
+    : new Date().toISOString()
+  const chatMessages: unknown[] = []
+  const pendingToolCalls = new Map<string, CheckpointToolCall>()
+  let generatedToolCallIndex = 0
+
+  messages.forEach((message, index) => {
+    const type = getMessageType(message)
+    const item = message && typeof message === 'object'
+      ? message as { id?: unknown, content?: unknown, name?: unknown, tool_call_id?: unknown, status?: unknown }
+      : {}
+    const content = extractTextContent(item.content)
+
+    if (type === 'human') {
+      chatMessages.push({
+        id: typeof item.id === 'string' ? item.id : createChatMessageId(agentId, index, 'user'),
+        role: 'user',
+        content,
+        date,
+      })
+      return
+    }
+
+    if (type === 'ai') {
+      for (const toolCall of extractToolCalls(message)) {
+        const id = toolCall.id ?? `checkpoint-tool-${generatedToolCallIndex++}`
+        pendingToolCalls.set(id, { ...toolCall, id })
+      }
+
+      if (content.trim()) {
+        chatMessages.push({
+          id: typeof item.id === 'string' ? item.id : createChatMessageId(agentId, index, 'agent'),
+          role: 'agent',
+          content,
+          date,
+          streamState: 'done',
+        })
+      }
+      return
+    }
+
+    if (type === 'tool') {
+      const toolCallId = typeof item.tool_call_id === 'string' ? item.tool_call_id : undefined
+      const toolCall = toolCallId ? pendingToolCalls.get(toolCallId) : undefined
+      const toolName = toolCall?.name ?? (typeof item.name === 'string' ? item.name : 'tool')
+      const failed = item.status === 'error'
+
+      if (toolCallId) pendingToolCalls.delete(toolCallId)
+      chatMessages.push({
+        id: typeof item.id === 'string' ? item.id : createChatMessageId(agentId, index, 'tool'),
+        role: 'agent',
+        content: '',
+        date,
+        timeline: [
+          {
+            value: toolCallId ?? createChatMessageId(agentId, index, 'tool-call'),
+            slot: `tool-${index}`,
+            date,
+            title: toolName,
+            description: `${failed ? '[error]' : '[done]'}\n${content}`,
+            icon: failed ? 'i-lucide-circle-alert' : 'i-lucide-circle-check',
+            toolState: failed ? 'error' : 'done',
+          },
+        ],
+        streamState: failed ? 'error' : 'done',
+      })
+    }
+  })
+
+  for (const interrupt of getStateInterrupts(state)) {
+    const pendingApproval = normalizeCheckpointApproval(interrupt)
+    const firstAction = pendingApproval.actionRequests[0]
+
+    if (firstAction) {
+      chatMessages.push({
+        id: createChatMessageId(agentId, chatMessages.length, 'interrupted-tool'),
+        role: 'agent',
+        content: '',
+        date,
+        timeline: [
+          {
+            value: firstAction.name,
+            slot: `tool-${chatMessages.length}`,
+            date,
+            title: firstAction.name,
+            description: '[interrupted]\nTool execution paused for approval',
+            icon: 'i-lucide-circle-pause',
+            toolState: 'interrupted',
+            durationMs: 0,
+          },
+        ],
+        streamState: 'done',
+      })
+    }
+
+    chatMessages.push({
+      id: createChatMessageId(agentId, chatMessages.length, 'approval'),
+      role: 'agent',
+      content: '',
+      date,
+      pendingApproval,
+      streamState: 'done',
+    })
+  }
+
+  return chatMessages
 }
 
 function extractInterrupt(payload: unknown): unknown | null {
@@ -138,6 +421,30 @@ export function createAgentManager() {
             updatedAt: now,
           }
         })
+    },
+
+    async listAgentChats(): Promise<AgentInfo[]> {
+      const agentInfos = this.listAgents()
+
+      return await Promise.all(agentInfos.map(async (agentInfo) => {
+        const agentData = agents[agentInfo.agentId]
+        const agent = agentData?.agent
+        if (!agent?.getState) return agentInfo
+
+        try {
+          const state = await agent.getState({ configurable: { thread_id: agentInfo.id } })
+          const messages = mapCheckpointStateToChatMessages(agentInfo.id, state)
+          return {
+            ...agentInfo,
+            messages,
+            updatedAt: typeof (state as { createdAt?: unknown }).createdAt === 'string'
+              ? (state as { createdAt: string }).createdAt
+              : agentInfo.updatedAt,
+          }
+        } catch {
+          return agentInfo
+        }
+      }))
     },
 
     createAgent(name: string, template: string): AgentInfo {

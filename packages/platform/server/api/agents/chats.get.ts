@@ -1,1 +1,1 @@
-export default defineEventHandler(() => agentManager.listAgents())
+export default defineEventHandler(() => agentManager.listAgentChats())

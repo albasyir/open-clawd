@@ -13,6 +13,7 @@ export default tool(
     maxResults?: number;
     topic?: "general" | "news" | "finance";
     includeRawContent?: boolean;
+    safeSearch?: boolean;
   }) => {
     const tavilySearch = new TavilySearch({
       maxResults,
