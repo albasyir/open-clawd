@@ -3,6 +3,7 @@ import type { SkillSearchResponse, SkillSearchResult } from '~/types'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 
 const limitItems = [10, 25, 50, 100].map(value => ({ label: value.toString(), value }))
 const debounceMs = 1000
@@ -54,6 +55,10 @@ const isDebouncing = ref(false)
 const isFetching = ref(false)
 const error = ref<SkillSearchError | null>(null)
 const hasSearched = ref(false)
+const installingSkills = ref<Set<string>>(new Set())
+const uninstallingSkills = ref<Set<string>>(new Set())
+const installedSkills = ref<Set<string>>(new Set())
+const checkingInstallation = ref(false)
 
 const trimmedQuery = computed(() => query.value.trim())
 const loading = computed(() => isDebouncing.value || isFetching.value)
@@ -106,6 +111,7 @@ async function searchSkills(searchQuery: string, searchLimit: number, runId: num
     searchType.value = result.searchType
     skills.value = result.skills
     hasSearched.value = true
+    void checkSkillInstallation(result.skills)
 
     await router.replace({
       path: '/skills',
@@ -160,6 +166,133 @@ function scheduleSearch() {
     isDebouncing.value = false
     void searchSkills(searchQuery, searchLimit, runId)
   }, debounceMs)
+}
+
+function setInstalling(skillId: string, installing: boolean) {
+  const next = new Set(installingSkills.value)
+  if (installing) {
+    next.add(skillId)
+  } else {
+    next.delete(skillId)
+  }
+  installingSkills.value = next
+}
+
+function setUninstalling(skillId: string, uninstalling: boolean) {
+  const next = new Set(uninstallingSkills.value)
+  if (uninstalling) {
+    next.add(skillId)
+  } else {
+    next.delete(skillId)
+  }
+  uninstallingSkills.value = next
+}
+
+function markInstalled(skillId: string) {
+  installedSkills.value = new Set([...installedSkills.value, skillId])
+}
+
+function markUninstalled(skillId: string) {
+  const next = new Set(installedSkills.value)
+  next.delete(skillId)
+  installedSkills.value = next
+}
+
+async function checkSkillInstallation(skillList: SkillSearchResult[]) {
+  checkingInstallation.value = true
+  try {
+    const result = await $fetch<{ skills: Array<{ id: string; installed: boolean }> }>('/api/skills/installation', {
+      method: 'POST',
+      body: {
+        skills: skillList.map(skill => ({
+          id: skill.id,
+          skillId: skill.skillId,
+          source: skill.source
+        }))
+      }
+    })
+
+    installedSkills.value = new Set(result.skills.filter(skill => skill.installed).map(skill => skill.id))
+  } catch (err) {
+    const checkError = getFetchError(err)
+    toast.add({
+      title: `Install status check failed (${checkError.code})`,
+      description: checkError.message,
+      color: 'error'
+    })
+  } finally {
+    checkingInstallation.value = false
+  }
+}
+
+async function installSkill(skill: SkillSearchResult) {
+  if (installingSkills.value.has(skill.id) || installedSkills.value.has(skill.id)) return
+
+  setInstalling(skill.id, true)
+  try {
+    await $fetch('/api/skills/install', {
+      method: 'POST',
+      body: {
+        id: skill.id,
+        skillId: skill.skillId,
+        source: skill.source
+      }
+    })
+    markInstalled(skill.id)
+    toast.add({
+      title: 'Skill installed',
+      description: skill.name,
+      color: 'success'
+    })
+  } catch (err) {
+    const installError = getFetchError(err)
+    toast.add({
+      title: `Install failed (${installError.code})`,
+      description: installError.message,
+      color: 'error'
+    })
+  } finally {
+    setInstalling(skill.id, false)
+  }
+}
+
+async function uninstallSkill(skill: SkillSearchResult) {
+  if (uninstallingSkills.value.has(skill.id) || !installedSkills.value.has(skill.id)) return
+
+  setUninstalling(skill.id, true)
+  try {
+    await $fetch('/api/skills/uninstall', {
+      method: 'POST',
+      body: {
+        id: skill.id,
+        skillId: skill.skillId,
+        source: skill.source
+      }
+    })
+    markUninstalled(skill.id)
+    toast.add({
+      title: 'Skill uninstalled',
+      description: skill.name,
+      color: 'success'
+    })
+  } catch (err) {
+    const uninstallError = getFetchError(err)
+    toast.add({
+      title: `Uninstall failed (${uninstallError.code})`,
+      description: uninstallError.message,
+      color: 'error'
+    })
+  } finally {
+    setUninstalling(skill.id, false)
+  }
+}
+
+function toggleSkillInstall(skill: SkillSearchResult) {
+  if (installedSkills.value.has(skill.id)) {
+    void uninstallSkill(skill)
+  } else {
+    void installSkill(skill)
+  }
 }
 
 onMounted(() => {
@@ -271,6 +404,16 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="flex items-center justify-end gap-2">
+	                <UButton
+	                  :icon="installedSkills.has(skill.id) ? 'i-lucide-trash-2' : 'i-lucide-download'"
+	                  :label="checkingInstallation ? 'Checking' : installedSkills.has(skill.id) ? 'Uninstall' : 'Install'"
+	                  :loading="installingSkills.has(skill.id) || uninstallingSkills.has(skill.id) || checkingInstallation"
+	                  :disabled="checkingInstallation"
+	                  :color="installedSkills.has(skill.id) ? 'error' : 'primary'"
+                  :variant="installedSkills.has(skill.id) ? 'soft' : 'solid'"
+                  size="sm"
+                  @click="toggleSkillInstall(skill)"
+                />
                 <UTooltip text="Open GitHub repository">
                   <UButton
                     icon="i-lucide-github"

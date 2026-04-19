@@ -1,12 +1,14 @@
 import { DynamicStructuredTool, HumanInTheLoopMiddlewareConfig, Tool } from "langchain"
 
-export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT'
+export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT' | 'UPSTREAM_ERROR'
 
 export class AgentError extends Error {
   code: AgentErrorCode
-  constructor(code: AgentErrorCode, message: string) {
+  statusCode?: number
+  constructor(code: AgentErrorCode, message: string, statusCode?: number) {
     super(message)
     this.code = code
+    this.statusCode = statusCode
   }
 }
 
@@ -21,6 +23,25 @@ export interface ModelInfo {
   id: string
   name: string
   content?: string
+}
+
+export interface SkillInstallInput {
+  id: string
+  skillId: string
+  source: string
+}
+
+export interface SkillInstallResult {
+  id: string
+  skillId: string
+  source: string
+  path: string
+  githubPath: string
+  githubUrl?: string
+}
+
+export interface SkillInstallationStatus extends SkillInstallInput {
+  installed: boolean
 }
 
 export interface AgentFileInfo {
