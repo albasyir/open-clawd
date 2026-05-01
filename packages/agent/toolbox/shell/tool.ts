@@ -101,20 +101,7 @@ function rejectShellCommand(message: string, runtime?: ShellToolRuntime): string
 }
 
 async function loadShellInterruptCallback(): Promise<ShellInterruptCallback> {
-  if (!import.meta.url.includes('/packages/agent/toolbox/')) {
-    // @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.
-    const mod = await import('./interrupt.ts') as { default?: unknown }
-    if (typeof mod.default !== 'function') {
-      throw new Error('Shell interrupt callback must be the default export function from interrupt.ts.')
-    }
-
-    return mod.default as ShellInterruptCallback
-  }
-
-  const interruptUrl = new URL('./interrupt.ts', import.meta.url)
-  interruptUrl.searchParams.set('t', Date.now().toString())
-
-  const mod = await import(interruptUrl.href) as { default?: unknown }
+  const mod = await import('./interrupt.ts') as { default?: unknown }
   if (typeof mod.default !== 'function') {
     throw new Error('Shell interrupt callback must be the default export function from interrupt.ts.')
   }

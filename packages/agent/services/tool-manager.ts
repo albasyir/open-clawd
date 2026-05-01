@@ -113,24 +113,36 @@ function listEditableToolFiles(dirPath: string) {
     .filter((file): file is { id: EditableToolFile; name: EditableToolFile; content: string } => file !== null)
 }
 
-function resolveToolExport(exported: unknown, label: string): { tool?: unknown; error?: string } {
-  if (exported == null) {
-    return { error: `In ${label}: No default export.` }
+function resolveToolExport(mod: Record<string, unknown>, label: string): { tool?: unknown; error?: string } {
+  // 1. Check default export first
+  const exported = mod.default
+  if (exported != null) {
+    if (isInvokableTool(exported) || typeof exported === 'function') {
+      return { tool: exported }
+    }
+
+    if (typeof exported === 'object' && exported !== null && 'tool' in exported) {
+      const toolboxTool = (exported as { tool?: unknown }).tool
+      if (toolboxTool == null) {
+        return { error: `In ${label}: Default toolbox export does not expose a tool.` }
+      }
+      return { tool: toolboxTool }
+    }
   }
 
-  if (isInvokableTool(exported) || typeof exported === 'function') {
+  // 2. Scan named exports for an invokable tool
+  for (const [key, value] of Object.entries(mod)) {
+    if (key === 'default') continue
+    if (isInvokableTool(value)) {
+      return { tool: value }
+    }
+  }
+
+  if (exported != null) {
     return { tool: exported }
   }
 
-  if (typeof exported === 'object' && exported !== null && 'tool' in exported) {
-    const toolboxTool = (exported as { tool?: unknown }).tool
-    if (toolboxTool == null) {
-      return { error: `In ${label}: Default toolbox export does not expose a tool.` }
-    }
-    return { tool: toolboxTool }
-  }
-
-  return { tool: exported }
+  return { error: `In ${label}: No tool export found.` }
 }
 
 async function runToolTest(
@@ -148,8 +160,8 @@ async function runToolTest(
   writer?.({ type: 'start', label })
 
   try {
-    const mod = await import(toolUrl)
-    const resolved = resolveToolExport(mod.default, label)
+    const mod = await import(toolUrl) as Record<string, unknown>
+    const resolved = resolveToolExport(mod, label)
 
     if (resolved.error) {
       return { success: false, error: resolved.error }
@@ -215,7 +227,7 @@ export function createToolManager() {
       mkdirSync(dirPath, { recursive: true })
       writeFileSync(join(dirPath, 'tool.ts'), NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
       const camelName = name.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase())
-      const indexContent = `async function importTool() {\n  if (!import.meta.url.includes('/packages/agent/toolbox/')) {\n    // @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.\n    return await import('./tool.ts')\n  }\n\n  const toolUrl = new URL('./tool.ts', import.meta.url)\n  toolUrl.searchParams.set('t', Date.now().toString())\n  return await import(toolUrl.href)\n}\n\nconst { default: ${camelName} } = await importTool()\n\nexport default {\n    tool: ${camelName},\n}\n`
+      const indexContent = `// @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.\nimport ${camelName} from './tool.ts'\n\nexport default {\n    tool: ${camelName},\n}\n`
       writeFileSync(join(dirPath, 'index.ts'), indexContent, 'utf-8')
       return { id: name, name }
     },
@@ -243,8 +255,8 @@ export function createToolManager() {
     },
 
     async testGlobal(id: string, input: Record<string, unknown>): Promise<TestResult> {
-      const absolutePath = join(globalToolsDir, id, 'index.ts')
-      const label = `agent/toolbox/${id}/index.ts`
+      const absolutePath = join(globalToolsDir, id, 'tool.ts')
+      const label = `agent/toolbox/${id}/tool.ts`
       return runToolTest({ absolutePath, label, input, allowCallable: false })
     },
 
@@ -253,8 +265,8 @@ export function createToolManager() {
       input: Record<string, unknown>,
       writer: TestStreamWriter,
     ): Promise<void> {
-      const absolutePath = join(globalToolsDir, id, 'index.ts')
-      const label = `agent/toolbox/${id}/index.ts`
+      const absolutePath = join(globalToolsDir, id, 'tool.ts')
+      const label = `agent/toolbox/${id}/tool.ts`
       const result = await runToolTest({ absolutePath, label, input, allowCallable: false, writer })
       writer({ type: 'result', ...result })
     },
