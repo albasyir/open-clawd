@@ -1,4 +1,4 @@
-import { DynamicStructuredTool, HumanInTheLoopMiddlewareConfig, Tool } from "langchain"
+import type { DynamicStructuredTool } from "langchain"
 
 export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT' | 'UPSTREAM_ERROR'
 
@@ -16,6 +16,11 @@ export interface ToolInfo {
   id: string
   name: string
   content?: string
+  files?: {
+    id: string
+    name: string
+    content: string
+  }[]
   symlink?: boolean
 }
 

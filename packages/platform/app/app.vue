@@ -17,8 +17,8 @@ useHead({
   }
 })
 
-const title = 'Nuxt Dashboard Template'
-const description = 'A professional dashboard template built with Nuxt UI, featuring multiple pages, data visualization, and comprehensive management capabilities for creating powerful admin interfaces.'
+const title = 'Momentum - Platform'
+const description = 'Momentum is an AI assistant that helps you get things done. It can write emails, create presentations, and even code. Its like having a personal assistant that actually does what you ask.'
 
 useSeoMeta({
   title,

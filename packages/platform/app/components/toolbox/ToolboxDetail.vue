@@ -22,7 +22,6 @@ const emits = defineEmits<{
 }>()
 
 const toast = useToast()
-const code = ref(props.tool.content ?? '')
 const saving = ref(false)
 const copying = ref(false)
 const testModalOpen = ref(false)
@@ -37,6 +36,52 @@ type TestStreamChunk
     | { type: 'progress', data: unknown }
     | { type: 'result', success: boolean, result?: unknown, error?: string }
 
+type EditorFile = {
+  id: string
+  name: string
+  content: string
+}
+
+function fallbackFilename(tool: ToolFile): string {
+  return tool.id.includes('.') ? tool.id : `${tool.id}.ts`
+}
+
+function getEditorFiles(tool: ToolFile): EditorFile[] {
+  if (tool.files?.length) {
+    return tool.files
+  }
+
+  return [{
+    id: tool.id,
+    name: fallbackFilename(tool),
+    content: tool.content ?? ''
+  }]
+}
+
+const activeFileId = ref('')
+const fileDrafts = ref<Record<string, string>>({})
+const editorFiles = computed(() => getEditorFiles(props.tool))
+const activeEditorFile = computed(() => editorFiles.value.find(file => file.id === activeFileId.value) ?? editorFiles.value[0])
+const hasMultipleEditorFiles = computed(() => editorFiles.value.length > 1)
+const activeFileContent = computed({
+  get() {
+    const id = activeEditorFile.value?.id
+    if (!id) return ''
+    return fileDrafts.value[id] ?? activeEditorFile.value?.content ?? ''
+  },
+  set(value: string) {
+    const id = activeEditorFile.value?.id
+    if (!id) return
+    fileDrafts.value = { ...fileDrafts.value, [id]: value }
+  }
+})
+
+function resetEditorFiles(tool: ToolFile): void {
+  const files = getEditorFiles(tool)
+  fileDrafts.value = Object.fromEntries(files.map(file => [file.id, file.content]))
+  activeFileId.value = files[0]?.id ?? ''
+}
+
 const sampleInputs: Record<string, string> = {
   'math': JSON.stringify({ a: 1, b: 2, operation: 'add' }, null, 2),
   'get-weather': JSON.stringify({ city: 'London' }, null, 2),
@@ -47,12 +92,12 @@ const sampleInputs: Record<string, string> = {
 watch(
   () => props.tool,
   (newTool) => {
-    code.value = newTool.content ?? ''
+    resetEditorFiles(newTool)
     testInput.value = sampleInputs[newTool.id] ?? '{}'
     testResult.value = null
     testLog.value = []
   },
-  { immediate: false }
+  { immediate: true }
 )
 
 function openTestModal() {
@@ -148,7 +193,9 @@ async function save(): Promise<boolean> {
   try {
     await $fetch(`${toolsBase.value}/${props.tool.id}`, {
       method: 'PUT',
-      body: { content: code.value }
+      body: props.tool.files
+        ? { content: activeFileContent.value, file: activeFileId.value }
+        : { content: activeFileContent.value }
     })
     toast.add({
       title: 'Saved',
@@ -236,8 +283,8 @@ const testResultEditorOptions = {
   wordWrap: 'on' as const
 }
 
-const editorLanguage = computed(() => props.tool.id.endsWith('.md') ? 'markdown' : 'typescript')
-const displayFilename = computed(() => props.tool.id.includes('.') ? props.tool.id : `${props.tool.id}.ts`)
+const displayFilename = computed(() => activeEditorFile.value?.name ?? fallbackFilename(props.tool))
+const editorLanguage = computed(() => displayFilename.value.endsWith('.md') ? 'markdown' : 'typescript')
 const testLogText = computed(() => {
   if (testLog.value.length > 0) {
     return testLog.value.join('\n\n')
@@ -378,13 +425,28 @@ watch(testModalOpen, (isOpen) => {
           />
         </div>
       </div>
-      <p v-if="!tool.content && !isSymlink" class="text-muted-foreground">
+      <div v-if="hasMultipleEditorFiles" class="mb-3 flex items-center gap-2 overflow-x-auto">
+        <div role="tablist" class="inline-flex rounded-md border border-default bg-elevated/20 p-1">
+          <UButton
+            v-for="file in editorFiles"
+            :key="file.id"
+            :label="file.name"
+            color="neutral"
+            size="xs"
+            :variant="activeFileId === file.id ? 'solid' : 'ghost'"
+            role="tab"
+            :aria-selected="activeFileId === file.id"
+            @click="activeFileId = file.id"
+          />
+        </div>
+      </div>
+      <p v-if="!activeEditorFile && !isSymlink" class="text-muted-foreground">
         Nothing here
       </p>
       <ClientOnly v-else>
         <div class="flex-1 min-h-[400px] rounded-lg overflow-hidden border border-default">
           <vue-monaco-editor
-            v-model:value="code"
+            v-model:value="activeFileContent"
             :language="editorLanguage"
             theme="vs-dark"
             :options="editorOptions"

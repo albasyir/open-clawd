@@ -1,3 +1,3 @@
 export default [
-    // (await import('../../toolbox/shell')).default
+    // (await import('../../toolbox/shell/index.ts' as string)).default
 ]

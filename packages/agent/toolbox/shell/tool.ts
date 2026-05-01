@@ -8,7 +8,6 @@ import { z } from 'zod'
 const PROCESS_TIMEOUT_MS = 30_000
 const SHELL_TOOL_NAME = 'shell_exec'
 const SHELL_APPROVAL_DECISIONS = ['approve', 'edit', 'reject'] as const
-const SHELL_INTERRUPT_PATTERN = 'facebook.com'
 
 type ShellToolRuntime = Partial<ToolRuntime> & { writer?: ((chunk: unknown) => void) | null }
 type ShellToolInput = {
@@ -25,6 +24,7 @@ type ShellApprovalResponse = {
 type ShellApprovalResult =
   | { type: 'execute', input: ShellToolInput }
   | { type: 'reject', message: string | ToolMessage }
+type ShellInterruptCallback = (input: ShellToolInput) => boolean | Promise<boolean>
 
 const shellToolSchema = z.object({
   command: z.string().describe('The shell command to run (e.g. "ls -la", "echo hello")'),
@@ -100,8 +100,41 @@ function rejectShellCommand(message: string, runtime?: ShellToolRuntime): string
   })
 }
 
-function resolveShellApproval(input: ShellToolInput, runtime?: ShellToolRuntime): ShellApprovalResult {
-  if (!input.command.includes(SHELL_INTERRUPT_PATTERN)) {
+async function loadShellInterruptCallback(): Promise<ShellInterruptCallback> {
+  if (!import.meta.url.includes('/packages/agent/toolbox/')) {
+    // @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.
+    const mod = await import('./interrupt.ts') as { default?: unknown }
+    if (typeof mod.default !== 'function') {
+      throw new Error('Shell interrupt callback must be the default export function from interrupt.ts.')
+    }
+
+    return mod.default as ShellInterruptCallback
+  }
+
+  const interruptUrl = new URL('./interrupt.ts', import.meta.url)
+  interruptUrl.searchParams.set('t', Date.now().toString())
+
+  const mod = await import(interruptUrl.href) as { default?: unknown }
+  if (typeof mod.default !== 'function') {
+    throw new Error('Shell interrupt callback must be the default export function from interrupt.ts.')
+  }
+
+  return mod.default as ShellInterruptCallback
+}
+
+async function shouldRequestShellApproval(input: ShellToolInput): Promise<boolean> {
+  const shouldInterrupt = await loadShellInterruptCallback()
+  const result = await shouldInterrupt({ command: input.command, cwd: input.cwd })
+
+  if (typeof result !== 'boolean') {
+    throw new Error('Shell interrupt callback must return true or false.')
+  }
+
+  return result
+}
+
+async function resolveShellApproval(input: ShellToolInput, runtime?: ShellToolRuntime): Promise<ShellApprovalResult> {
+  if (!(await shouldRequestShellApproval(input))) {
     return { type: 'execute', input }
   }
 
@@ -238,7 +271,7 @@ async function runShellCommand(
 }
 
 export const shellTool = tool(async (input, runtime: ShellToolRuntime) => {
-  const approval = resolveShellApproval(input, runtime)
+  const approval = await resolveShellApproval(input, runtime)
   if (approval.type === 'reject') return approval.message
   return await runShellCommand(approval.input, runtime)
 }, {
