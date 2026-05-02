@@ -12,6 +12,7 @@ import { resolveBaseDir } from './resolve-base'
 
 const TOOLBOX_IMPORT_PREFIX = '../../toolbox/'
 const EDITABLE_TOOL_FILES = ['tool.ts', 'interrupt.ts'] as const
+const TOOLBOX_TEST_CONFIG_KEY = '__toolboxTest'
 type EditableToolFile = typeof EDITABLE_TOOL_FILES[number]
 
 const NEW_TOOL_TEMPLATE = `import { tool } from 'langchain'
@@ -31,6 +32,10 @@ export default tool((input) => \`\${input.firstName} \${input.lastName}\`, {
 
 function formatError(label: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
+  if (err instanceof Error && err.name === 'ToolboxToolInterruptedError') {
+    return `In ${label}: ${message}`
+  }
+
   const stack = err instanceof Error ? err.stack : undefined
   return stack ? `${message}\n\nAt:\n${stack}` : `In ${label}: ${message}`
 }
@@ -45,7 +50,10 @@ type TestStreamWriter = (chunk: TestStreamChunk) => void
 type InvokableTool = {
   invoke: (
     input: Record<string, unknown>,
-    config?: { writer?: (chunk: unknown) => void },
+    config?: {
+      writer?: (chunk: unknown) => void
+      configurable?: Record<string, unknown>
+    },
   ) => Promise<unknown>
 }
 
@@ -174,7 +182,10 @@ async function runToolTest(
     }
 
     if (isInvokableTool(tool)) {
-      const result = await tool.invoke(input, { writer: emitProgress })
+      const result = await tool.invoke(input, {
+        writer: emitProgress,
+        configurable: { [TOOLBOX_TEST_CONFIG_KEY]: true },
+      })
       return { success: true, result }
     }
 

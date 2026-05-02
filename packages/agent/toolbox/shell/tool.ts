@@ -2,12 +2,13 @@ import { spawn } from 'node:child_process'
 import { tool } from 'langchain'
 import { ToolMessage } from '@langchain/core/messages'
 import type { ToolRuntime } from '@langchain/core/tools'
-import { interrupt } from '@langchain/langgraph'
+import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
 import { z } from 'zod'
 
 const PROCESS_TIMEOUT_MS = 30_000
 const SHELL_TOOL_NAME = 'shell_exec'
 const SHELL_APPROVAL_DECISIONS = ['approve', 'edit', 'reject'] as const
+const TOOLBOX_TEST_CONFIG_KEY = '__toolboxTest'
 
 type ShellToolRuntime = Partial<ToolRuntime> & { writer?: ((chunk: unknown) => void) | null }
 type ShellToolInput = {
@@ -30,6 +31,13 @@ const shellToolSchema = z.object({
   command: z.string().describe('The shell command to run (e.g. "ls -la", "echo hello")'),
   cwd: z.string().optional().describe('Working directory for the command (default: current)')
 })
+
+class ToolboxToolInterruptedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ToolboxToolInterruptedError'
+  }
+}
 
 function createLineWriter(
   streamName: 'stdout' | 'stderr',
@@ -100,8 +108,46 @@ function rejectShellCommand(message: string, runtime?: ShellToolRuntime): string
   })
 }
 
+function getRuntimeConfigurable(runtime?: ShellToolRuntime): Record<string, unknown> | undefined {
+  const directConfigurable = (runtime as { configurable?: unknown } | undefined)?.configurable
+  if (directConfigurable && typeof directConfigurable === 'object') {
+    return directConfigurable as Record<string, unknown>
+  }
+
+  const nestedConfigurable = (runtime as { config?: { configurable?: unknown } } | undefined)?.config?.configurable
+  if (nestedConfigurable && typeof nestedConfigurable === 'object') {
+    return nestedConfigurable as Record<string, unknown>
+  }
+
+  return undefined
+}
+
+function isToolboxTestRuntime(runtime?: ShellToolRuntime): boolean {
+  return getRuntimeConfigurable(runtime)?.[TOOLBOX_TEST_CONFIG_KEY] === true
+}
+
+function throwToolboxInterrupted(input: ShellToolInput): never {
+  throw new ToolboxToolInterruptedError(
+    [
+      `Tool execution interrupted by shell interrupt policy.`,
+      `\`${SHELL_TOOL_NAME}\` requires approval before running: ${input.command}`,
+      'This runner cannot resume interrupted tool calls. Run it from an agent chat to approve, edit, or reject the command.',
+    ].join(' '),
+  )
+}
+
+function isMissingInterruptRuntimeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return [
+    'Called interrupt() outside the context of a graph.',
+    'No configurable found in config',
+    'No checkpointer set',
+  ].includes(error.message)
+}
+
 async function loadShellInterruptCallback(): Promise<ShellInterruptCallback> {
-  const mod = await import('./interrupt.ts') as { default?: unknown }
+  const interruptUrl = new URL(`./interrupt.ts?t=${Date.now()}`, import.meta.url).href
+  const mod = await import(interruptUrl) as { default?: unknown }
   if (typeof mod.default !== 'function') {
     throw new Error('Shell interrupt callback must be the default export function from interrupt.ts.')
   }
@@ -125,21 +171,32 @@ async function resolveShellApproval(input: ShellToolInput, runtime?: ShellToolRu
     return { type: 'execute', input }
   }
 
-  const response = interrupt({
-    actionRequests: [
-      {
-        name: SHELL_TOOL_NAME,
-        args: input,
-        description: describeShellCommand(input),
-      },
-    ],
-    reviewConfigs: [
-      {
-        actionName: SHELL_TOOL_NAME,
-        allowedDecisions: [...SHELL_APPROVAL_DECISIONS],
-      },
-    ],
-  })
+  if (isToolboxTestRuntime(runtime)) {
+    throwToolboxInterrupted(input)
+  }
+
+  let response: unknown
+  try {
+    response = interrupt({
+      actionRequests: [
+        {
+          name: SHELL_TOOL_NAME,
+          args: input,
+          description: describeShellCommand(input),
+        },
+      ],
+      reviewConfigs: [
+        {
+          actionName: SHELL_TOOL_NAME,
+          allowedDecisions: [...SHELL_APPROVAL_DECISIONS],
+        },
+      ],
+    })
+  } catch (error) {
+    if (isGraphInterrupt(error)) throw error
+    if (isMissingInterruptRuntimeError(error)) throwToolboxInterrupted(input)
+    throw error
+  }
 
   const decision = validateShellApprovalResponse(response)
 
@@ -263,58 +320,6 @@ export const shellTool = tool(async (input, runtime: ShellToolRuntime) => {
   return await runShellCommand(approval.input, runtime)
 }, {
   name: SHELL_TOOL_NAME,
-  description: `Access the machine terminal and execute shell commands.
-
-This tool allows you to perform any task that can be done via a command-line interface (CLI), including but not limited to:
-
-- Networking:
-  ping, curl, wget, traceroute, nslookup, dig
-  Examples:
-    ping facebook.com
-    curl -I https://example.com
-    wget https://example.com/file
-
-- Filesystem:
-  ls, cd, pwd, mkdir, rm, cp, mv, cat, touch
-  Examples:
-    ls -la
-    cat file.txt
-    mkdir logs
-
-- File editing / writing:
-  echo, printf, redirection (>, >>), tee
-  Examples:
-    echo "hello" > file.txt
-    printf "data" >> file.txt
-
-- Search and processing:
-  grep, find, awk, sed
-  Examples:
-    grep "error" app.log
-    find . -name "*.ts"
-
-- System / environment:
-  whoami, env, export, ps, top
-  Examples:
-    ps aux
-    env
-
-- Development tools:
-  node, npm, yarn, pnpm, git, docker
-  Examples:
-    node -v
-    git status
-    docker ps
-
-- Compression / archive:
-  zip, unzip, tar
-  Examples:
-    tar -xvf file.tar
-    unzip file.zip
-
-You may translate natural language into an appropriate shell command.
-If the user asks for something that can be done in a terminal, use this tool.
-
-This is the primary interface for interacting with the machine.`,
+  description: `Access the machine terminal and execute shell commands.`,
   schema: shellToolSchema
 })
