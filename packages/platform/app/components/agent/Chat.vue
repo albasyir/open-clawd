@@ -7,7 +7,7 @@ const props = withDefaults(
     conversation: AgentConversation
     /** When true, render only inner content (no panel wrapper). Use when parent provides UDashboardPanel. */
     embedded?: boolean
-    /** When true, parent is sending (e.g. real agent request). Disables input and shows loading. */
+    /** When true, parent is sending (e.g. real agent request). Blocks submit actions and shows loading. */
     sendLoading?: boolean
   }>(),
   { embedded: false, sendLoading: false }
@@ -17,7 +17,6 @@ const emit = defineEmits<{
   close: []
   send: [message: string]
   approvalDecision: [messageId: string, decision: 'approve' | 'edit' | 'comment' | 'reject', payload?: Array<{ name: string, args: Record<string, unknown> }> | string]
-  newChat: []
   deleteAgent: []
 }>()
 
@@ -36,16 +35,8 @@ const approvalCommentModalOpen = ref(false)
 const approvalCommentMessageId = ref<string | null>(null)
 const approvalCommentText = ref('')
 
-const loading = computed(() => localSending.value || !!props.sendLoading)
-const promptSubmitDisabled = computed(() => loading.value || !message.value.trim())
-const selectedModel = ref('qwen3.5:9b')
-const modelItems = [
-  {
-    label: 'qwen3.5:9b',
-    value: 'qwen3.5:9b',
-    icon: 'i-lucide-cpu'
-  }
-]
+const responseLoading = computed(() => localSending.value || !!props.sendLoading)
+const promptSubmitDisabled = computed(() => responseLoading.value || !message.value.trim())
 
 function isLatestConversationMessage(message: ChatMessage) {
   return props.conversation.messages.at(-1)?.id === message.id
@@ -54,7 +45,7 @@ function isLatestConversationMessage(message: ChatMessage) {
 function shouldShowWorkingState(message: ChatMessage) {
   return message.role === 'agent'
     && message.streamState === 'working'
-    && loading.value
+    && responseLoading.value
     && isLatestConversationMessage(message)
     && !hasTimeline(message)
     && !hasPendingApproval(message)
@@ -158,7 +149,7 @@ function shouldShowAgentTimestamp(message: ChatMessage) {
 
 function onSubmit() {
   const text = message.value.trim()
-  if (!text || loading.value) return
+  if (!text || responseLoading.value) return
 
   localSending.value = true
   emit('send', text)
@@ -209,19 +200,19 @@ function isApprovalDecisionAllowed(message: ChatMessage, decision: 'approve' | '
 
 function canRespondToApproval(message: ChatMessage, decision: 'approve' | 'reject') {
   return message.pendingApproval?.state === 'pending'
-    && !loading.value
+    && !responseLoading.value
     && isApprovalDecisionAllowed(message, decision)
 }
 
 function canEditApproval(message: ChatMessage) {
   return message.pendingApproval?.state === 'pending'
-    && !loading.value
+    && !responseLoading.value
     && isApprovalDecisionAllowed(message, 'edit')
 }
 
 function canCommentOnApproval(message: ChatMessage) {
   return message.pendingApproval?.state === 'pending'
-    && !loading.value
+    && !responseLoading.value
     && isApprovalDecisionAllowed(message, 'reject')
 }
 
@@ -280,7 +271,7 @@ function parseEditedApprovalActions() {
 }
 
 function submitApprovalEdit() {
-  if (!approvalEditMessageId.value || !approvalEditActionsText.value.trim() || loading.value) return
+  if (!approvalEditMessageId.value || !approvalEditActionsText.value.trim() || responseLoading.value) return
 
   const editedActions = parseEditedApprovalActions()
   if (!editedActions) return
@@ -303,7 +294,7 @@ function openApprovalCommentDialog(message: ChatMessage) {
 
 function submitApprovalComment() {
   const text = approvalCommentText.value.trim()
-  if (!approvalCommentMessageId.value || !text || loading.value) return
+  if (!approvalCommentMessageId.value || !text || responseLoading.value) return
 
   emit('approvalDecision', approvalCommentMessageId.value, 'comment', text)
   approvalCommentModalOpen.value = false
@@ -531,26 +522,14 @@ defineExpose({
         variant="subtle"
         placeholder="Type your message..."
         :rows="2"
-        :disabled="loading"
         class="mt-auto"
         @submit="onSubmit"
       >
         <UChatPromptSubmit
           color="neutral"
-          :loading="loading"
+          :loading="responseLoading"
           :disabled="promptSubmitDisabled"
         />
-
-        <template #footer>
-          <USelect
-            v-model="selectedModel"
-            :items="modelItems"
-            icon="i-lucide-cpu"
-            placeholder="Select a model"
-            variant="ghost"
-            disabled
-          />
-        </template>
       </UChatPrompt>
     </div>
   </UDashboardPanel>
@@ -750,26 +729,14 @@ defineExpose({
         variant="subtle"
         placeholder="Type your message..."
         :rows="2"
-        :disabled="loading"
         class="mt-auto"
         @submit="onSubmit"
       >
         <UChatPromptSubmit
           color="neutral"
-          :loading="loading"
+          :loading="responseLoading"
           :disabled="promptSubmitDisabled"
         />
-
-        <template #footer>
-          <USelect
-            v-model="selectedModel"
-            :items="modelItems"
-            icon="i-lucide-cpu"
-            placeholder="Select a model"
-            variant="ghost"
-            disabled
-          />
-        </template>
       </UChatPrompt>
     </div>
   </div>
@@ -797,7 +764,7 @@ defineExpose({
           autoresize
           autofocus
           placeholder="{ &quot;name&quot;: &quot;shell_exec&quot;, &quot;args&quot;: { &quot;command&quot;: &quot;pwd&quot; } }"
-          :disabled="loading"
+          :disabled="responseLoading"
           class="font-mono text-xs"
           @keydown.meta.enter.prevent="submitApprovalEdit"
           @keydown.ctrl.enter.prevent="submitApprovalEdit"
@@ -810,14 +777,14 @@ defineExpose({
             label="Cancel"
             color="neutral"
             variant="ghost"
-            :disabled="loading"
+            :disabled="responseLoading"
             @click="approvalEditModalOpen = false"
           />
           <UButton
             label="Apply edit"
             icon="i-lucide-pencil"
             color="info"
-            :disabled="!approvalEditActionsText.trim() || loading"
+            :disabled="!approvalEditActionsText.trim() || responseLoading"
             @click="submitApprovalEdit"
           />
         </div>
@@ -834,7 +801,7 @@ defineExpose({
           autoresize
           autofocus
           placeholder="Tell the agent what to change or reconsider..."
-          :disabled="loading"
+          :disabled="responseLoading"
           @keydown.meta.enter.prevent="submitApprovalComment"
           @keydown.ctrl.enter.prevent="submitApprovalComment"
         />
@@ -843,14 +810,14 @@ defineExpose({
             label="Cancel"
             color="neutral"
             variant="ghost"
-            :disabled="loading"
+            :disabled="responseLoading"
             @click="approvalCommentModalOpen = false"
           />
           <UButton
             label="Send comment"
             icon="i-lucide-send"
             color="info"
-            :disabled="!approvalCommentText.trim() || loading"
+            :disabled="!approvalCommentText.trim() || responseLoading"
             @click="submitApprovalComment"
           />
         </div>

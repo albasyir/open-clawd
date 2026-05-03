@@ -1,6 +1,5 @@
 import testAgent from './test/agent'
 import testIdentity from './test/identity'
-
 export type AgentRegistryEntry = {
   agent: unknown
   identity: {
