@@ -1,15 +1,8 @@
 import { AgentError } from 'clawpro-agent'
 import { z } from 'zod'
 
-const githubRepoSchema = z.string().regex(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i)
-const skillIdSchema = z.string().regex(/^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-z0-9_.:@-]+(?:\/[a-z0-9_.:@-]+)*$/i)
-
-const installSkillSchema = z.object({
-  id: z.string().min(1),
-  skillId: skillIdSchema,
-  source: githubRepoSchema
-}).refine(value => value.id === `${value.source}/${value.skillId}`, {
-  message: 'Skill id must match source and skillId'
+const skillDetailQuerySchema = z.object({
+  id: z.string().trim().min(1)
 })
 
 const STATUS_MAP: Record<string, number> = {
@@ -20,10 +13,10 @@ const STATUS_MAP: Record<string, number> = {
 }
 
 export default defineEventHandler(async (event) => {
-  const body = await readValidatedBody(event, installSkillSchema.parse)
+  const { id } = await getValidatedQuery(event, skillDetailQuerySchema.parse)
 
   try {
-    return await skillManager.install(body)
+    return await skillManager.getInstalled(id)
   } catch (err) {
     if (err instanceof AgentError) {
       throw createError({

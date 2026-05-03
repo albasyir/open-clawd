@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import type { SkillSearchResponse, SkillSearchResult } from '~/types'
+import type { InstalledSkill, SkillSearchResponse, SkillSearchResult } from '~/types'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+
+const { data: installedSkillList, refresh: refreshInstalledSkills } = await useFetch<InstalledSkill[]>('/api/skills', { default: () => [] })
 
 const limitItems = [10, 25, 50, 100].map(value => ({ label: value.toString(), value }))
 const debounceMs = 1000
@@ -13,12 +15,16 @@ type SkillSearchError = {
   message: string
 }
 
+type SkillInstallationResponse = {
+  skills: Array<{ id: string, installed: boolean }>
+}
+
 function normalizeLimit(value: unknown) {
   const parsed = typeof value === 'string' ? Number(value) : Number.NaN
   return limitItems.some(item => item.value === parsed) ? parsed : 100
 }
 
-function getFetchError(err: unknown): SkillSearchError {
+function getFetchError(err: unknown, fallback = 'Failed to search skills.'): SkillSearchError {
   if (err && typeof err === 'object') {
     const fetchError = err as {
       data?: {
@@ -37,13 +43,13 @@ function getFetchError(err: unknown): SkillSearchError {
 
     return {
       code: typeof statusCode === 'number' || typeof statusCode === 'string' ? String(statusCode) : 'unknown',
-      message: typeof message === 'string' && message ? message : 'Failed to search skills.'
+      message: typeof message === 'string' && message ? message : fallback
     }
   }
 
   return {
     code: 'unknown',
-    message: 'Failed to search skills.'
+    message: fallback
   }
 }
 
@@ -57,17 +63,40 @@ const error = ref<SkillSearchError | null>(null)
 const hasSearched = ref(false)
 const installingSkills = ref<Set<string>>(new Set())
 const uninstallingSkills = ref<Set<string>>(new Set())
+const removingInstalledSkills = ref<Set<string>>(new Set())
 const installedSkills = ref<Set<string>>(new Set())
 const checkingInstallation = ref(false)
 const pendingInstallSkill = ref<SkillSearchResult | null>(null)
 const installAcknowledged = ref(false)
+const installDialogOpen = computed({
+  get() {
+    return !!pendingInstallSkill.value
+  },
+  set(value: boolean) {
+    if (!value) {
+      pendingInstallSkill.value = null
+      installAcknowledged.value = false
+    }
+  }
+})
+const selectedSkillId = ref(typeof route.query.skill === 'string' ? route.query.skill : '')
+const selectedSkillDetail = ref<InstalledSkill | null>(null)
+const selectedSkillLoading = ref(false)
+const selectedSkillError = ref<SkillSearchError | null>(null)
 
 const trimmedQuery = computed(() => query.value.trim())
 const loading = computed(() => isDebouncing.value || isFetching.value)
+const installedSkillsList = computed(() => installedSkillList.value ?? [])
+const hasInstalledSkills = computed(() => installedSkillsList.value.length > 0)
+const selectedInstalledSkill = computed(() => installedSkillsList.value.find(skill => skill.id === selectedSkillId.value) ?? null)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let searchRunId = 0
+let skillDetailRunId = 0
 let stopSearchWatch: (() => void) | null = null
+let stopSkillRouteWatch: (() => void) | null = null
+let stopSkillDetailWatch: (() => void) | null = null
+let stopInstalledSkillsWatch: (() => void) | null = null
 
 function formatInstalls(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
@@ -93,19 +122,71 @@ function clearSearch() {
   isDebouncing.value = false
   isFetching.value = false
   resetSearchState()
-  void router.replace({ path: '/skills' })
+  void router.replace({
+    path: '/skills',
+    query: selectedSkillId.value ? { skill: selectedSkillId.value } : undefined
+  })
 }
 
 function syncSearchRoute(searchQuery: string, searchLimit: number) {
+  const nextQuery: Record<string, string> = selectedSkillId.value ? { skill: selectedSkillId.value } : {}
+  if (searchQuery) {
+    nextQuery.q = searchQuery
+    nextQuery.limit = searchLimit.toString()
+  }
+
   void router.replace({
     path: '/skills',
-    query: searchQuery
-      ? {
-          q: searchQuery,
-          limit: searchLimit.toString()
-        }
-      : undefined
+    query: nextQuery
   })
+}
+
+function setSelectedSkillRoute(skillId: string | null) {
+  const nextQuery = { ...route.query }
+  if (skillId) {
+    nextQuery.skill = skillId
+  } else {
+    delete nextQuery.skill
+  }
+
+  void router.replace({
+    path: '/skills',
+    query: nextQuery
+  })
+}
+
+function selectInstalledSkill(skill: InstalledSkill) {
+  selectedSkillId.value = skill.id
+  setSelectedSkillRoute(skill.id)
+}
+
+function clearSelectedSkill() {
+  selectedSkillId.value = ''
+  setSelectedSkillRoute(null)
+}
+
+async function loadSelectedSkill(skillId: string, runId: number) {
+  selectedSkillLoading.value = true
+  selectedSkillError.value = null
+
+  try {
+    const skill = await $fetch<InstalledSkill>('/api/skills/detail', {
+      query: { id: skillId }
+    })
+
+    if (runId !== skillDetailRunId) return
+
+    selectedSkillDetail.value = skill
+  } catch (err) {
+    if (runId !== skillDetailRunId) return
+
+    selectedSkillDetail.value = null
+    selectedSkillError.value = getFetchError(err, 'Failed to open skill.')
+  } finally {
+    if (runId === skillDetailRunId) {
+      selectedSkillLoading.value = false
+    }
+  }
 }
 
 async function searchSkills(searchQuery: string, searchLimit: number, runId: number) {
@@ -195,6 +276,16 @@ function setUninstalling(skillId: string, uninstalling: boolean) {
   uninstallingSkills.value = next
 }
 
+function setRemovingInstalledSkill(skillId: string, removing: boolean) {
+  const next = new Set(removingInstalledSkills.value)
+  if (removing) {
+    next.add(skillId)
+  } else {
+    next.delete(skillId)
+  }
+  removingInstalledSkills.value = next
+}
+
 function markInstalled(skillId: string) {
   installedSkills.value = new Set([...installedSkills.value, skillId])
 }
@@ -208,7 +299,7 @@ function markUninstalled(skillId: string) {
 async function checkSkillInstallation(skillList: SkillSearchResult[]) {
   checkingInstallation.value = true
   try {
-    const result = await $fetch<{ skills: Array<{ id: string; installed: boolean }> }>('/api/skills/installation', {
+    const result = await $fetch<SkillInstallationResponse>('/api/skills/installation', {
       method: 'POST',
       body: {
         skills: skillList.map(skill => ({
@@ -246,6 +337,7 @@ async function installSkill(skill: SkillSearchResult) {
       }
     })
     markInstalled(skill.id)
+    await refreshInstalledSkills()
     toast.add({
       title: 'Skill installed',
       description: skill.name,
@@ -294,6 +386,10 @@ async function uninstallSkill(skill: SkillSearchResult) {
       }
     })
     markUninstalled(skill.id)
+    await refreshInstalledSkills()
+    if (selectedSkillId.value === skill.id) {
+      clearSelectedSkill()
+    }
     toast.add({
       title: 'Skill uninstalled',
       description: skill.name,
@@ -311,6 +407,61 @@ async function uninstallSkill(skill: SkillSearchResult) {
   }
 }
 
+function getInstalledSkillInstallInput(skill: InstalledSkill) {
+  const parts = skill.id.split('/')
+  if (parts.length < 3) return null
+
+  const source = parts.slice(0, 2).join('/')
+  const skillId = parts.slice(2).join('/')
+
+  return {
+    id: skill.id,
+    skillId,
+    source
+  }
+}
+
+async function removeInstalledSkill(skill: InstalledSkill) {
+  if (removingInstalledSkills.value.has(skill.id)) return
+
+  const installInput = getInstalledSkillInstallInput(skill)
+  if (!installInput) {
+    toast.add({
+      title: 'Remove failed',
+      description: `Cannot resolve install metadata for ${skill.id}.`,
+      color: 'error'
+    })
+    return
+  }
+
+  setRemovingInstalledSkill(skill.id, true)
+  try {
+    await $fetch('/api/skills/uninstall', {
+      method: 'POST',
+      body: installInput
+    })
+    markUninstalled(skill.id)
+    await refreshInstalledSkills()
+    if (selectedSkillId.value === skill.id) {
+      clearSelectedSkill()
+    }
+    toast.add({
+      title: 'Skill removed',
+      description: skill.name,
+      color: 'success'
+    })
+  } catch (err) {
+    const removeError = getFetchError(err, 'Failed to remove skill.')
+    toast.add({
+      title: `Remove failed (${removeError.code})`,
+      description: removeError.message,
+      color: 'error'
+    })
+  } finally {
+    setRemovingInstalledSkill(skill.id, false)
+  }
+}
+
 function toggleSkillInstall(skill: SkillSearchResult) {
   if (installedSkills.value.has(skill.id)) {
     void uninstallSkill(skill)
@@ -321,26 +472,181 @@ function toggleSkillInstall(skill: SkillSearchResult) {
 
 onMounted(() => {
   stopSearchWatch = watch([trimmedQuery, limit], scheduleSearch, { immediate: true })
+  stopSkillRouteWatch = watch(
+    () => route.query.skill,
+    (skill) => {
+      selectedSkillId.value = typeof skill === 'string' ? skill : ''
+    },
+    { immediate: true }
+  )
+  stopSkillDetailWatch = watch(
+    selectedSkillId,
+    (skillId) => {
+      skillDetailRunId += 1
+      selectedSkillDetail.value = null
+      selectedSkillError.value = null
+
+      if (!skillId) {
+        selectedSkillLoading.value = false
+        return
+      }
+
+      void loadSelectedSkill(skillId, skillDetailRunId)
+    },
+    { immediate: true }
+  )
+  stopInstalledSkillsWatch = watch(
+    installedSkillsList,
+    (skillList) => {
+      if (!selectedSkillId.value || skillList.length === 0) return
+      if (!skillList.some(skill => skill.id === selectedSkillId.value)) {
+        clearSelectedSkill()
+      }
+    },
+    { immediate: true }
+  )
 })
 
 onBeforeUnmount(() => {
   clearDebounceTimer()
   stopSearchWatch?.()
+  stopSkillRouteWatch?.()
+  stopSkillDetailWatch?.()
+  stopInstalledSkillsWatch?.()
 })
 </script>
 
 <template>
+  <UDashboardPanel
+    v-if="hasInstalledSkills"
+    id="skills-installed"
+    :default-size="25"
+    :min-size="20"
+    :max-size="30"
+    resizable
+  >
+    <UDashboardNavbar title="Skills">
+      <template #leading>
+        <UDashboardSidebarCollapse />
+      </template>
+      <template #trailing>
+        <UBadge :label="installedSkillsList.length" variant="subtle" />
+      </template>
+    </UDashboardNavbar>
+
+    <div class="overflow-y-auto divide-y divide-default">
+      <div
+        v-for="skill in installedSkillsList"
+        :key="skill.id"
+        class="flex items-start gap-2 border-l-2 p-4 text-sm transition-colors sm:px-6"
+        :class="[
+          selectedSkillId === skill.id
+            ? 'border-primary bg-primary/10 text-highlighted'
+            : 'border-bg text-toned hover:border-primary hover:bg-primary/5'
+        ]"
+      >
+        <div
+          class="min-w-0 flex-1 cursor-pointer"
+          @click="selectInstalledSkill(skill)"
+        >
+          <div class="flex min-w-0 items-center gap-2">
+            <UIcon name="i-lucide-sparkles" class="size-4 shrink-0 text-dimmed" />
+            <span class="truncate font-medium">{{ skill.name }}</span>
+          </div>
+          <p class="mt-0.5 truncate font-mono text-xs text-dimmed">
+            {{ skill.id }}
+          </p>
+          <p v-if="skill.description" class="mt-1 line-clamp-2 text-xs text-dimmed">
+            {{ skill.description }}
+          </p>
+        </div>
+        <UTooltip text="Remove skill">
+          <UButton
+            icon="i-lucide-trash-2"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            class="shrink-0 -me-1"
+            :loading="removingInstalledSkills.has(skill.id)"
+            @click.stop="removeInstalledSkill(skill)"
+          />
+        </UTooltip>
+      </div>
+    </div>
+  </UDashboardPanel>
+
   <UDashboardPanel id="skills-search">
     <template #header>
-      <UDashboardNavbar title="Skills">
+      <UDashboardNavbar :title="selectedInstalledSkill?.name ? 'Skill Detail' : 'Finding New Skill'">
         <template #leading>
-          <UDashboardSidebarCollapse />
+          <UDashboardSidebarCollapse v-if="!hasInstalledSkills" />
+        </template>
+        <template #right>
+          <UButton
+            v-if="selectedSkillId"
+            icon="i-lucide-search"
+            label="Find New Skills"
+            color="primary"
+            size="sm"
+            @click="clearSelectedSkill"
+          />
         </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
-      <div class="flex h-full min-h-0 flex-col">
+      <div v-if="selectedSkillId" class="flex h-full min-h-0 flex-col overflow-y-auto">
+        <div class="border-b border-default px-4 py-4 sm:px-6">
+          <div class="flex min-w-0 items-center gap-2">
+            <UIcon name="i-lucide-sparkles" class="size-4 shrink-0 text-primary" />
+            <h1 class="truncate text-sm font-semibold text-highlighted">
+              {{ selectedSkillDetail?.name ?? selectedInstalledSkill?.name ?? selectedSkillId }}
+            </h1>
+          </div>
+          <p class="mt-1 break-all font-mono text-xs text-dimmed">
+            {{ selectedSkillDetail?.id ?? selectedSkillId }}
+          </p>
+          <p v-if="selectedSkillDetail?.description ?? selectedInstalledSkill?.description" class="mt-2 text-sm text-toned">
+            {{ selectedSkillDetail?.description ?? selectedInstalledSkill?.description }}
+          </p>
+        </div>
+
+        <div v-if="selectedSkillLoading" class="flex flex-1 items-center justify-center p-6">
+          <div class="flex items-center gap-3 text-sm text-dimmed">
+            <UIcon name="i-lucide-loader-2" class="size-4 animate-spin" />
+            <span>Loading skill...</span>
+          </div>
+        </div>
+
+        <div v-else-if="selectedSkillError" class="flex-1 p-4 sm:p-6">
+          <div class="flex items-start gap-3 rounded-lg border border-error/25 bg-error/10 p-4">
+            <UIcon name="i-lucide-alert-circle" class="mt-0.5 size-5 shrink-0 text-error" />
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <p class="text-sm font-semibold text-highlighted">
+                  Skill failed to open
+                </p>
+                <UBadge color="error" variant="subtle" :label="`HTTP ${selectedSkillError.code}`" />
+              </div>
+              <p class="mt-2 break-words font-mono text-xs text-error">
+                {{ selectedSkillError.message }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="selectedSkillDetail?.content" class="mx-auto w-full max-w-4xl p-4 sm:p-6">
+          <AgentChatMarkdown :content="selectedSkillDetail.content" />
+        </div>
+
+        <div v-else class="flex flex-1 items-center justify-center p-6">
+          <p class="text-sm text-dimmed">
+            Nothing here
+          </p>
+        </div>
+      </div>
+
+      <div v-else class="flex h-full min-h-0 flex-col">
         <div
           class="grid shrink-0 gap-3 px-4 transition-all duration-300 ease-out sm:px-6 lg:grid-cols-[minmax(0,1fr)_8rem] lg:items-center"
           :class="trimmedQuery
@@ -350,7 +656,7 @@ onBeforeUnmount(() => {
           <UInput
             v-model="query"
             icon="i-lucide-search"
-            placeholder="Search skills"
+            placeholder="Search new kills"
             :ui="{ base: 'font-mono' }"
           />
           <USelect
@@ -468,7 +774,7 @@ onBeforeUnmount(() => {
     </template>
   </UDashboardPanel>
 
-  <UModal v-model:open="pendingInstallSkill" title="Install skill">
+  <UModal v-model:open="installDialogOpen" title="Install skill">
     <template #body>
       <div v-if="pendingInstallSkill" class="space-y-4 p-4">
         <div class="space-y-1">
@@ -482,16 +788,28 @@ onBeforeUnmount(() => {
 
         <dl class="grid gap-3 text-sm sm:grid-cols-2">
           <div class="min-w-0">
-            <dt class="text-xs text-dimmed">Skill ID</dt>
-            <dd class="truncate font-mono text-toned">{{ pendingInstallSkill.skillId }}</dd>
+            <dt class="text-xs text-dimmed">
+              Skill ID
+            </dt>
+            <dd class="truncate font-mono text-toned">
+              {{ pendingInstallSkill.skillId }}
+            </dd>
           </div>
           <div class="min-w-0">
-            <dt class="text-xs text-dimmed">Source</dt>
-            <dd class="truncate font-mono text-toned">{{ pendingInstallSkill.source }}</dd>
+            <dt class="text-xs text-dimmed">
+              Source
+            </dt>
+            <dd class="truncate font-mono text-toned">
+              {{ pendingInstallSkill.source }}
+            </dd>
           </div>
           <div class="min-w-0">
-            <dt class="text-xs text-dimmed">Installs</dt>
-            <dd class="text-toned">{{ formatInstalls(pendingInstallSkill.installs) }}</dd>
+            <dt class="text-xs text-dimmed">
+              Installs
+            </dt>
+            <dd class="text-toned">
+              {{ formatInstalls(pendingInstallSkill.installs) }}
+            </dd>
           </div>
         </dl>
 

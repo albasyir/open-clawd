@@ -91,6 +91,13 @@ export interface SkillSearchResponse {
   skills: SkillSearchResult[]
 }
 
+export interface InstalledSkill {
+  id: string
+  name: string
+  description?: string
+  content?: string
+}
+
 export type ChatMessageRole = 'user' | 'agent'
 
 export interface ChatTimelineItem {

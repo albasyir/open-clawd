@@ -49,6 +49,13 @@ export interface SkillInstallationStatus extends SkillInstallInput {
   installed: boolean
 }
 
+export interface InstalledSkillInfo {
+  id: string
+  name: string
+  description?: string
+  content?: string
+}
+
 export interface AgentFileInfo {
   id: string
   name: string

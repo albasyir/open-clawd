@@ -2,7 +2,7 @@ import { AgentError } from 'clawpro-agent'
 import { z } from 'zod'
 
 const githubRepoSchema = z.string().regex(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i)
-const skillIdSchema = z.string().regex(/^[a-z0-9_.-]+$/i)
+const skillIdSchema = z.string().regex(/^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-z0-9_.:@-]+(?:\/[a-z0-9_.:@-]+)*$/i)
 
 const uninstallSkillSchema = z.object({
   id: z.string().min(1),
