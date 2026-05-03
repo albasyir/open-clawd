@@ -5,30 +5,30 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { IndentationText, Project, QuoteKind, SyntaxKind, type AsExpression, type CallExpression, type Node, type StringLiteral } from 'ts-morph'
+import type { ToolRunnableConfig } from '@langchain/core/tools'
+import { IndentationText, Node, Project, QuoteKind, SyntaxKind, type CallExpression } from 'ts-morph'
 import { AgentError } from '../types'
 import type { ToolInfo, TestResult } from '../types'
 import { resolveBaseDir } from './resolve-base'
+import { isRecord, type UnknownRecord } from '../utils/record.ts'
 
 const TOOLBOX_IMPORT_PREFIX = '../../toolbox/'
 const EDITABLE_TOOL_FILES = ['tool.ts', 'interrupt.ts'] as const
 const TOOLBOX_TEST_CONFIG_KEY = '__toolboxTest'
 type EditableToolFile = typeof EDITABLE_TOOL_FILES[number]
 
-const NEW_TOOL_TEMPLATE = `import { tool } from 'langchain'
+const NEW_TOOL_TEMPLATE = `import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 
 export default tool((input) => \`\${input.firstName} \${input.lastName}\`, {
   name: '__NAME__',
-  description: 'Change it, this only example',
+  description: 'Change it, this is only an example',
   schema: z.object({
-    firstName: z.string().describe('First name to be concated'),
-    lastName:  z.string().describe('Last name to be concated')
+    firstName: z.string().describe('First name to be concatenated'),
+    lastName: z.string().describe('Last name to be concatenated')
   }),
 })
 `
-
-
 
 function formatError(label: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
@@ -50,15 +50,14 @@ type TestStreamWriter = (chunk: TestStreamChunk) => void
 type InvokableTool = {
   invoke: (
     input: Record<string, unknown>,
-    config?: {
+    config?: ToolRunnableConfig & {
       writer?: (chunk: unknown) => void
-      configurable?: Record<string, unknown>
     },
   ) => Promise<unknown>
 }
 
 function isInvokableTool(tool: unknown): tool is InvokableTool {
-  return typeof tool === 'object' && tool !== null && 'invoke' in tool && typeof tool.invoke === 'function'
+  return isRecord(tool) && typeof tool.invoke === 'function'
 }
 
 function getToolboxImportPath(toolName: string): string {
@@ -79,12 +78,12 @@ function normalizeToolboxImportPath(importPath: string): string | null {
 }
 
 function getStringLiteralText(node: Node | undefined): string | null {
-  if (node?.getKind() === SyntaxKind.AsExpression) {
-    return getStringLiteralText((node as AsExpression).getExpression())
+  if (node && Node.isAsExpression(node)) {
+    return getStringLiteralText(node.getExpression())
   }
 
-  if (!node || node.getKind() !== SyntaxKind.StringLiteral) return null
-  return (node as StringLiteral).getLiteralText()
+  if (!node || !Node.isStringLiteral(node)) return null
+  return node.getLiteralText()
 }
 
 function getToolboxImportPathFromCall(call: CallExpression): string | null {
@@ -102,6 +101,20 @@ function getLinkedToolNameFromElement(element: Node): string | null {
     .find(call => call.getExpression().getKind() === SyntaxKind.ImportKeyword)
   const importPath = importCall ? getToolboxImportPathFromCall(importCall) : null
   return importPath ? normalizeToolboxImportPath(importPath) : null
+}
+
+function loadToolArrayLiteral(toolFilePath: string) {
+  const project = new Project({
+    manipulationSettings: {
+      indentationText: IndentationText.TwoSpaces,
+      quoteKind: QuoteKind.Single
+    }
+  })
+  const sourceFile = project.addSourceFileAtPath(toolFilePath)
+  const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
+  const arrayLiteral = exportAssign?.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
+
+  return arrayLiteral ? { sourceFile, arrayLiteral } : null
 }
 
 function readEditableToolFile(dirPath: string, fileName: EditableToolFile) {
@@ -129,8 +142,8 @@ function resolveToolExport(mod: Record<string, unknown>, label: string): { tool?
       return { tool: exported }
     }
 
-    if (typeof exported === 'object' && exported !== null && 'tool' in exported) {
-      const toolboxTool = (exported as { tool?: unknown }).tool
+    if (isRecord(exported) && 'tool' in exported) {
+      const toolboxTool = exported.tool
       if (toolboxTool == null) {
         return { error: `In ${label}: Default toolbox export does not expose a tool.` }
       }
@@ -168,7 +181,7 @@ async function runToolTest(
   writer?.({ type: 'start', label })
 
   try {
-    const mod = await import(toolUrl) as Record<string, unknown>
+    const mod = await import(toolUrl) as UnknownRecord
     const resolved = resolveToolExport(mod, label)
 
     if (resolved.error) {
@@ -209,10 +222,7 @@ export function createToolManager() {
   const baseDir = resolveBaseDir()
   const globalToolsDir = join(baseDir, 'toolbox')
 
-
   return {
-    // ── Global tools ──
-
     listGlobal(): ToolInfo[] {
       try {
         const entries = readdirSync(globalToolsDir, { withFileTypes: true })
@@ -238,7 +248,7 @@ export function createToolManager() {
       mkdirSync(dirPath, { recursive: true })
       writeFileSync(join(dirPath, 'tool.ts'), NEW_TOOL_TEMPLATE.replace(/__NAME__/g, name), 'utf-8')
       const camelName = name.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase())
-      const indexContent = `// @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.\nimport ${camelName} from './tool.ts'\n\nexport default {\n    tool: ${camelName},\n}\n`
+      const indexContent = `// @ts-expect-error Runtime TS loaders and Nuxt both need the explicit extension.\nimport ${camelName} from './tool.ts'\n\nexport default {\n  tool: ${camelName},\n}\n`
       writeFileSync(join(dirPath, 'index.ts'), indexContent, 'utf-8')
       return { id: name, name }
     },
@@ -266,8 +276,8 @@ export function createToolManager() {
     },
 
     async testGlobal(id: string, input: Record<string, unknown>): Promise<TestResult> {
-      const absolutePath = join(globalToolsDir, id, 'tool.ts')
-      const label = `agent/toolbox/${id}/tool.ts`
+      const absolutePath = join(globalToolsDir, id, 'index.ts')
+      const label = `agent/toolbox/${id}/index.ts`
       return runToolTest({ absolutePath, label, input, allowCallable: false })
     },
 
@@ -276,31 +286,20 @@ export function createToolManager() {
       input: Record<string, unknown>,
       writer: TestStreamWriter,
     ): Promise<void> {
-      const absolutePath = join(globalToolsDir, id, 'tool.ts')
-      const label = `agent/toolbox/${id}/tool.ts`
+      const absolutePath = join(globalToolsDir, id, 'index.ts')
+      const label = `agent/toolbox/${id}/index.ts`
       const result = await runToolTest({ absolutePath, label, input, allowCallable: false, writer })
       writer({ type: 'result', ...result })
     },
-
-    // ── Agent ↔ Global tool linking ──
 
     listLinkedTools(agentId: string): string[] {
       const toolFilePath = join(baseDir, 'agents', agentId, 'tool.ts')
       if (!existsSync(toolFilePath)) return []
 
-      const project = new Project({
-        manipulationSettings: {
-          indentationText: IndentationText.TwoSpaces,
-          quoteKind: QuoteKind.Single
-        }
-      })
-      const sourceFile = project.addSourceFileAtPath(toolFilePath)
-      
-      const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
-      const arrayLiteral = exportAssign?.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
-      if (!arrayLiteral) return []
+      const toolArray = loadToolArrayLiteral(toolFilePath)
+      if (!toolArray) return []
 
-      return arrayLiteral.getElements()
+      return toolArray.arrayLiteral.getElements()
         .map(getLinkedToolNameFromElement)
         .filter((text): text is string => text !== null)
     },
@@ -316,28 +315,17 @@ export function createToolManager() {
         throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
       }
 
-      const project = new Project({
-        manipulationSettings: {
-          indentationText: IndentationText.TwoSpaces,
-          quoteKind: QuoteKind.Single
-        }
-      })
-      const sourceFile = project.addSourceFileAtPath(toolFilePath)
-      
-      const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
-      if (!exportAssign) return
+      const toolArray = loadToolArrayLiteral(toolFilePath)
+      if (!toolArray) return
 
-      const arrayLiteral = exportAssign.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
-      if (!arrayLiteral) return
-
-      const existing = arrayLiteral.getElements().some(element => {
+      const existing = toolArray.arrayLiteral.getElements().some(element => {
         return getLinkedToolNameFromElement(element) === toolName
       })
       if (existing) return
 
-      arrayLiteral.addElement(getToolboxImportExpression(toolName))
-      sourceFile.formatText()
-      sourceFile.saveSync()
+      toolArray.arrayLiteral.addElement(getToolboxImportExpression(toolName))
+      toolArray.sourceFile.formatText()
+      toolArray.sourceFile.saveSync()
     },
 
     unlinkTool(agentId: string, toolName: string): void {
@@ -346,31 +334,20 @@ export function createToolManager() {
         throw new AgentError('NOT_FOUND', `Agent "${agentId}" tool.ts not found`)
       }
 
-      const project = new Project({
-        manipulationSettings: {
-          indentationText: IndentationText.TwoSpaces,
-          quoteKind: QuoteKind.Single
-        }
-      })
-      const sourceFile = project.addSourceFileAtPath(toolFilePath)
-      
-      const exportAssign = sourceFile.getExportAssignment(d => !d.isExportEquals())
-      if (!exportAssign) return
+      const toolArray = loadToolArrayLiteral(toolFilePath)
+      if (!toolArray) return
 
-      const arrayLiteral = exportAssign.getExpressionIfKind(SyntaxKind.ArrayLiteralExpression)
-      if (!arrayLiteral) return
-
-      const elementsToRemove = arrayLiteral.getElements().filter(element => {
+      const elementsToRemove = toolArray.arrayLiteral.getElements().filter(element => {
         return getLinkedToolNameFromElement(element) === toolName
       })
-      // Remove elements in reverse order to preserve indices of earlier elements
+
       for (let i = elementsToRemove.length - 1; i >= 0; i--) {
         const element = elementsToRemove[i]
-        if (element) arrayLiteral.removeElement(element)
+        if (element) toolArray.arrayLiteral.removeElement(element)
       }
-      
-      sourceFile.formatText()
-      sourceFile.saveSync()
+
+      toolArray.sourceFile.formatText()
+      toolArray.sourceFile.saveSync()
     },
 
   }

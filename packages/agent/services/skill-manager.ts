@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { AgentError } from '../types'
 import type { SkillInstallInput, SkillInstallResult, SkillInstallationStatus } from '../types'
 import { resolveBaseDir } from './resolve-base'
+import { isRecord } from '../utils/record.ts'
 
 type GithubContentResponse = {
   type?: unknown
@@ -29,9 +30,8 @@ function decodeGithubContent(content: string) {
 async function getGithubErrorMessage(response: Response) {
   try {
     const body = await response.json() as unknown
-    if (body && typeof body === 'object') {
-      const errorBody = body as { message?: unknown }
-      if (typeof errorBody.message === 'string' && errorBody.message) return errorBody.message
+    if (isRecord(body) && typeof body.message === 'string' && body.message) {
+      return body.message
     }
   } catch {
     // Ignore and use fallback below.
@@ -41,11 +41,11 @@ async function getGithubErrorMessage(response: Response) {
 }
 
 function parseGithubContentResponse(payload: unknown) {
-  if (!payload || typeof payload !== 'object') {
+  if (!isRecord(payload)) {
     throw new AgentError('UPSTREAM_ERROR', 'GitHub returned an unexpected SKILL.md response')
   }
 
-  const body = payload as GithubContentResponse
+  const body: GithubContentResponse = payload
   if (body.type !== 'file'
     || typeof body.path !== 'string'
     || typeof body.encoding !== 'string'

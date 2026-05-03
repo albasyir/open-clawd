@@ -10,15 +10,16 @@ import identity from './identity'
 
 const agent = createAgent({
   name: identity.name,
-  model: model,
+  model,
   tools: tools.map(({ tool }) => tool),
   checkpointer: memory,
   middleware: [
     summarizationMiddleware({
-      model: model,
+      model,
       trigger: { fraction: 0.8 },
     }),
   ],
-  systemPrompt: `**You are ${identity.name}, first assistant of ${identity.owner}.**` })
+  systemPrompt: `**You are ${identity.name}, first assistant of ${identity.owner}.**`,
+})
 
 export default agent

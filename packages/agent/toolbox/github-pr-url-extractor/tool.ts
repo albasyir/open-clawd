@@ -1,6 +1,10 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 
+const githubPullRequestUrlSchema = z.object({
+  url: z.url(),
+})
+
 export const githubPullRequestUrlExtractorTool = tool(
   async (input) => {
     const url = new URL(input.url)
@@ -10,19 +14,20 @@ export const githubPullRequestUrlExtractorTool = tool(
       throw new Error(`Unsupported host: ${url.hostname}`)
     }
 
-    if (parts.length < 4 || parts[2] !== 'pull') {
+    const [owner, repo, marker, pullNumberPath] = parts
+    if (!owner || !repo || marker !== 'pull' || !pullNumberPath) {
       throw new Error('Not a GitHub pull request URL')
     }
 
-    const pull_number = Number(parts[3])
+    const pull_number = Number(pullNumberPath)
 
     if (!Number.isInteger(pull_number) || pull_number <= 0) {
       throw new Error('Invalid pull request number')
     }
 
     return {
-      owner: parts[0],
-      repo: parts[1],
+      owner,
+      repo,
       pull_number,
     }
   },
@@ -30,8 +35,6 @@ export const githubPullRequestUrlExtractorTool = tool(
     name: 'github_pull_request_url_extractor',
     description:
       'Extract owner, repo, and pull_number from a GitHub pull request URL.',
-    schema: z.object({
-      url: z.url(),
-    }),
+    schema: githubPullRequestUrlSchema,
   },
 )

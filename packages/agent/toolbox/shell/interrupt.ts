@@ -3,6 +3,6 @@ type ShellInterruptParams = {
   cwd?: string
 }
 
-export default function shouldInterrupt(params: ShellInterruptParams): boolean {
-  return params.command.includes('facebook.com')
+export default function(params: ShellInterruptParams): boolean {
+  return params.command.includes('x.com')
 }

@@ -1,5 +1,6 @@
 import { AIMessageChunk } from '@langchain/core/messages'
 import { Command } from '@langchain/langgraph'
+import type { Decision, HITLRequest, HITLResponse } from 'langchain'
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -8,45 +9,71 @@ import type { AgentInfo, AgentFileInfo, TemplateInfo } from '../types'
 import agents from '../agents'
 import { resolveBaseDir } from './resolve-base'
 import { registerAgent, unregisterAgent } from './agent-registry'
+import { isRecord, type UnknownRecord } from '../utils/record.ts'
 
 type AgentChatStreamWriter = (chunk: unknown) => void
-type AgentApprovalDecision =
-  | { type: 'approve' }
-  | { type: 'edit', editedAction: { name: string, args: Record<string, unknown> } }
-  | { type: 'reject', message?: string }
-  | { type: 'comment', message: string }
+type AgentApprovalDecision = Decision | { type: 'comment', message: string }
 type AgentChatResume = {
   decisions: AgentApprovalDecision[]
 }
 type AgentChatInput =
   | { message: string, resume?: never }
   | { message?: never, resume: AgentChatResume }
-type AgentToolStreamEvent = {
-  event: 'on_tool_start' | 'on_tool_event' | 'on_tool_end' | 'on_tool_error'
-  toolCallId?: string
-  name: string
-  input?: unknown
-  data?: unknown
-  output?: unknown
-  error?: unknown
-}
 type CheckpointToolCall = {
   id?: string
   name: string
   args: Record<string, unknown>
 }
-type CheckpointPendingApproval = {
+type CheckpointPendingApproval = HITLRequest & {
   id?: string
-  actionRequests: Array<{ name: string, args: Record<string, unknown>, description?: string }>
-  reviewConfigs: Array<{ actionName: string, allowedDecisions: Array<'approve' | 'edit' | 'reject'>, argsSchema?: Record<string, unknown> }>
   state: 'pending'
+}
+type AgentRuntime = {
+  getState?: (config: unknown) => Promise<unknown>
+  invoke?: (input: unknown, config?: unknown) => Promise<unknown>
+  stream?: (input: unknown, config?: unknown) => Promise<AsyncIterable<unknown>>
+}
+
+const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md'] as const
+type AgentFileId = typeof ALLOWED_FILES[number]
+
+function isAllowedFile(fileId: string): fileId is AgentFileId {
+  return ALLOWED_FILES.some(file => file === fileId)
+}
+
+function hasAgentMethod<K extends keyof AgentRuntime>(
+  agent: unknown,
+  method: K,
+): agent is AgentRuntime & Required<Pick<AgentRuntime, K>> {
+  return isRecord(agent) && typeof agent[method] === 'function'
+}
+
+function formatDisplayName(id: string): string {
+  return id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ')
+}
+
+function stripEditableExtension(fileName: string): string {
+  return fileName.replace(/\.(?:ts|md)$/, '')
+}
+
+function getStateValues(state: unknown): UnknownRecord | undefined {
+  if (!isRecord(state)) return undefined
+  return isRecord(state.values) ? state.values : state
+}
+
+function isApprovalDecision(decision: unknown): decision is 'approve' | 'edit' | 'reject' {
+  return decision === 'approve' || decision === 'edit' || decision === 'reject'
 }
 
 function extractTextContent(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     const text = content
-      .map((block: any) => (block?.type === 'text' ? block.text : typeof block === 'string' ? block : ''))
+      .map((block) => {
+        if (typeof block === 'string') return block
+        if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') return block.text
+        return ''
+      })
       .filter(Boolean)
       .join('')
     if (text) return text
@@ -56,18 +83,18 @@ function extractTextContent(content: unknown): string {
 }
 
 function extractReasoningContent(message: unknown): string {
-  if (!message || typeof message !== 'object') return ''
+  if (!isRecord(message)) return ''
 
-  const additionalKwargs = (message as { additional_kwargs?: { reasoning_content?: unknown } }).additional_kwargs
+  const additionalKwargs = isRecord(message.additional_kwargs) ? message.additional_kwargs : undefined
   if (typeof additionalKwargs?.reasoning_content === 'string' && additionalKwargs.reasoning_content) {
     return additionalKwargs.reasoning_content
   }
 
-  const contentBlocks = (message as { contentBlocks?: Array<{ type?: string, reasoning?: unknown }> }).contentBlocks
+  const contentBlocks = message.contentBlocks
   if (Array.isArray(contentBlocks)) {
     return contentBlocks
-      .filter(block => block?.type === 'reasoning' && typeof block.reasoning === 'string')
-      .map(block => block.reasoning as string)
+      .filter((block): block is UnknownRecord => isRecord(block))
+      .flatMap(block => block.type === 'reasoning' && typeof block.reasoning === 'string' ? [block.reasoning] : [])
       .join('')
   }
 
@@ -75,27 +102,25 @@ function extractReasoningContent(message: unknown): string {
 }
 
 function extractReplyFromState(state: unknown): string {
-  if (!state || typeof state !== 'object') return ''
-
-  const stateValues = 'values' in state && state.values && typeof state.values === 'object'
-    ? state.values
-    : state
-
-  const messages = (stateValues as { messages?: Array<{ content?: unknown }> }).messages
+  const stateValues = getStateValues(state)
+  const messages = stateValues?.messages
   if (!Array.isArray(messages) || messages.length === 0) return ''
 
   const lastMessage = messages.at(-1)
-  return lastMessage ? extractTextContent(lastMessage.content) : ''
+  return isRecord(lastMessage) ? extractTextContent(lastMessage.content) : ''
 }
 
 function getMessageType(message: unknown): string {
-  if (!message || typeof message !== 'object') return ''
+  if (!isRecord(message)) return ''
 
-  const item = message as { type?: unknown, _getType?: () => unknown, getType?: () => unknown }
-  if (typeof item.type === 'string') return item.type
+  if (typeof message.type === 'string') return message.type
 
   try {
-    const type = item._getType?.() ?? item.getType?.()
+    const type = typeof message._getType === 'function'
+      ? message._getType()
+      : typeof message.getType === 'function'
+        ? message.getType()
+        : undefined
     return typeof type === 'string' ? type : ''
   } catch {
     return ''
@@ -103,95 +128,74 @@ function getMessageType(message: unknown): string {
 }
 
 function getStateMessages(state: unknown): unknown[] {
-  if (!state || typeof state !== 'object') return []
-
-  const values = 'values' in state && state.values && typeof state.values === 'object'
-    ? state.values
-    : state
-  const messages = (values as { messages?: unknown }).messages
+  const messages = getStateValues(state)?.messages
   return Array.isArray(messages) ? messages : []
 }
 
 function getStateInterrupts(state: unknown): Array<{ id?: string, value?: unknown }> {
-  if (!state || typeof state !== 'object') return []
+  if (!isRecord(state)) return []
 
-  const tasks = (state as { tasks?: unknown }).tasks
+  const tasks = state.tasks
   if (!Array.isArray(tasks)) return []
 
   return tasks.flatMap((task) => {
-    const interrupts = task && typeof task === 'object'
-      ? (task as { interrupts?: unknown }).interrupts
-      : undefined
+    const interrupts = isRecord(task) ? task.interrupts : undefined
     if (!Array.isArray(interrupts)) return []
 
-    return interrupts.map((interrupt) => {
-      if (!interrupt || typeof interrupt !== 'object') return { value: interrupt }
+    return interrupts.map((interrupt): { id?: string, value?: unknown } => {
+      if (!isRecord(interrupt)) return { value: interrupt }
 
       return {
-        id: typeof (interrupt as { id?: unknown }).id === 'string'
-          ? (interrupt as { id: string }).id
-          : undefined,
-        value: (interrupt as { value?: unknown }).value,
+        id: typeof interrupt.id === 'string' ? interrupt.id : undefined,
+        value: interrupt.value,
       }
     })
   })
 }
 
 function parseToolArgs(args: unknown): Record<string, unknown> {
-  if (args && typeof args === 'object' && !Array.isArray(args)) return args as Record<string, unknown>
+  if (isRecord(args)) return args
   if (typeof args !== 'string') return {}
 
   try {
     const parsed = JSON.parse(args)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {}
+    return isRecord(parsed) ? parsed : {}
   } catch {
     return {}
   }
 }
 
 function extractToolCalls(message: unknown): CheckpointToolCall[] {
-  if (!message || typeof message !== 'object') return []
+  if (!isRecord(message)) return []
 
-  const item = message as {
-    tool_calls?: unknown
-    additional_kwargs?: { tool_calls?: unknown }
-  }
-  const toolCalls = Array.isArray(item.tool_calls)
-    ? item.tool_calls
-    : Array.isArray(item.additional_kwargs?.tool_calls)
-      ? item.additional_kwargs.tool_calls
+  const additionalKwargs = isRecord(message.additional_kwargs) ? message.additional_kwargs : undefined
+  const toolCalls = Array.isArray(message.tool_calls)
+    ? message.tool_calls
+    : Array.isArray(additionalKwargs?.tool_calls)
+      ? additionalKwargs.tool_calls
       : []
 
   return toolCalls.map((toolCall): CheckpointToolCall | null => {
-    if (!toolCall || typeof toolCall !== 'object') return null
+    if (!isRecord(toolCall)) return null
 
-    const call = toolCall as {
-      id?: unknown
-      name?: unknown
-      args?: unknown
-      function?: { name?: unknown, arguments?: unknown }
-    }
-    const name = typeof call.name === 'string'
-      ? call.name
-      : typeof call.function?.name === 'string'
-        ? call.function.name
+    const functionCall = isRecord(toolCall.function) ? toolCall.function : undefined
+    const name = typeof toolCall.name === 'string'
+      ? toolCall.name
+      : typeof functionCall?.name === 'string'
+        ? functionCall.name
         : ''
     if (!name) return null
 
     return {
-      id: typeof call.id === 'string' ? call.id : undefined,
+      id: typeof toolCall.id === 'string' ? toolCall.id : undefined,
       name,
-      args: parseToolArgs(call.args ?? call.function?.arguments),
+      args: parseToolArgs(toolCall.args ?? functionCall?.arguments),
     }
   }).filter((toolCall): toolCall is CheckpointToolCall => toolCall != null)
 }
 
 function normalizeCheckpointApproval(interrupt: { id?: string, value?: unknown }): CheckpointPendingApproval {
-  const value = interrupt.value && typeof interrupt.value === 'object'
-    ? interrupt.value as Record<string, unknown>
-    : {}
+  const value = isRecord(interrupt.value) ? interrupt.value : {}
   const actionRequests = Array.isArray(value.actionRequests)
     ? value.actionRequests
     : Array.isArray(value.action_requests)
@@ -206,7 +210,7 @@ function normalizeCheckpointApproval(interrupt: { id?: string, value?: unknown }
   return {
     id: interrupt.id,
     actionRequests: actionRequests.map((action) => {
-      const item = action && typeof action === 'object' ? action as Record<string, unknown> : {}
+      const item = isRecord(action) ? action : {}
       const name = typeof item.name === 'string'
         ? item.name
         : typeof item.action === 'string'
@@ -220,7 +224,7 @@ function normalizeCheckpointApproval(interrupt: { id?: string, value?: unknown }
       }
     }),
     reviewConfigs: reviewConfigs.map((config) => {
-      const item = config && typeof config === 'object' ? config as Record<string, unknown> : {}
+      const item = isRecord(config) ? config : {}
       const allowedDecisions = Array.isArray(item.allowedDecisions)
         ? item.allowedDecisions
         : Array.isArray(item.allowed_decisions)
@@ -233,11 +237,9 @@ function normalizeCheckpointApproval(interrupt: { id?: string, value?: unknown }
           : typeof item.action_name === 'string'
             ? item.action_name
             : 'tool',
-        allowedDecisions: allowedDecisions.filter((decision): decision is 'approve' | 'edit' | 'reject' =>
-          decision === 'approve' || decision === 'edit' || decision === 'reject'
-        ),
-        argsSchema: item.argsSchema && typeof item.argsSchema === 'object'
-          ? item.argsSchema as Record<string, unknown>
+        allowedDecisions: allowedDecisions.filter(isApprovalDecision),
+        argsSchema: isRecord(item.argsSchema)
+          ? item.argsSchema
           : undefined,
       }
     }),
@@ -251,8 +253,9 @@ function createChatMessageId(agentId: string, index: number, suffix: string): st
 
 function mapCheckpointStateToChatMessages(agentId: string, state: unknown): unknown[] {
   const messages = getStateMessages(state)
-  const date = typeof (state as { createdAt?: unknown } | null)?.createdAt === 'string'
-    ? (state as { createdAt: string }).createdAt
+  const stateRecord = isRecord(state) ? state : undefined
+  const date = typeof stateRecord?.createdAt === 'string'
+    ? stateRecord.createdAt
     : new Date().toISOString()
   const chatMessages: unknown[] = []
   const pendingToolCalls = new Map<string, CheckpointToolCall>()
@@ -260,9 +263,7 @@ function mapCheckpointStateToChatMessages(agentId: string, state: unknown): unkn
 
   messages.forEach((message, index) => {
     const type = getMessageType(message)
-    const item = message && typeof message === 'object'
-      ? message as { id?: unknown, content?: unknown, name?: unknown, tool_call_id?: unknown, status?: unknown }
-      : {}
+    const item = isRecord(message) ? message : {}
     const content = extractTextContent(item.content)
 
     if (type === 'human') {
@@ -360,22 +361,22 @@ function mapCheckpointStateToChatMessages(agentId: string, state: unknown): unkn
   return chatMessages
 }
 
-function extractInterrupt(payload: unknown): unknown | null {
-  if (!payload || typeof payload !== 'object') return null
+function extractInterrupt(payload: unknown): { id?: string, value?: unknown } | null {
+  if (!isRecord(payload)) return null
 
-  const interrupts = (payload as { __interrupt__?: unknown }).__interrupt__
+  const interrupts = payload.__interrupt__
   if (!Array.isArray(interrupts) || interrupts.length === 0) return null
 
   const firstInterrupt = interrupts[0]
-  if (!firstInterrupt || typeof firstInterrupt !== 'object') return firstInterrupt ?? null
+  if (!isRecord(firstInterrupt)) return { value: firstInterrupt }
 
   return {
-    id: (firstInterrupt as { id?: unknown }).id,
-    value: (firstInterrupt as { value?: unknown }).value,
+    id: typeof firstInterrupt.id === 'string' ? firstInterrupt.id : undefined,
+    value: firstInterrupt.value,
   }
 }
 
-function normalizeApprovalResume(resume: AgentChatResume): AgentChatResume {
+function normalizeApprovalResume(resume: AgentChatResume): HITLResponse {
   return {
     decisions: resume.decisions.map((decision) => {
       if (decision.type !== 'comment') return decision
@@ -393,8 +394,6 @@ function normalizeApprovalResume(resume: AgentChatResume): AgentChatResume {
   }
 }
 
-const ALLOWED_FILES = ['agent.ts', 'memory.ts', 'model.ts', 'identity.ts', 'soul.md']
-
 export function createAgentManager() {
   const baseDir = resolveBaseDir()
   const agentsDir = join(baseDir, 'agents')
@@ -408,7 +407,7 @@ export function createAgentManager() {
         .map((entry) => entry.name)
         .map((id) => {
           const data = agents[id]
-          let name = id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ')
+          let name = formatDisplayName(id)
           if (data?.identity?.name) name = data.identity.name
           return {
             id,
@@ -429,16 +428,17 @@ export function createAgentManager() {
       return await Promise.all(agentInfos.map(async (agentInfo) => {
         const agentData = agents[agentInfo.agentId]
         const agent = agentData?.agent
-        if (!agent?.getState) return agentInfo
+        if (!hasAgentMethod(agent, 'getState')) return agentInfo
 
         try {
           const state = await agent.getState({ configurable: { thread_id: agentInfo.id } })
           const messages = mapCheckpointStateToChatMessages(agentInfo.id, state)
+          const stateRecord = isRecord(state) ? state : undefined
           return {
             ...agentInfo,
             messages,
-            updatedAt: typeof (state as { createdAt?: unknown }).createdAt === 'string'
-              ? (state as { createdAt: string }).createdAt
+            updatedAt: typeof stateRecord?.createdAt === 'string'
+              ? stateRecord.createdAt
               : agentInfo.updatedAt,
           }
         } catch {
@@ -491,7 +491,9 @@ export function createAgentManager() {
       if (!agentData) throw new AgentError('NOT_FOUND', `Agent "${id}" not found`)
 
       const agent = agentData.agent
-      if (!agent?.invoke) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no invoke method`)
+      if (!hasAgentMethod(agent, 'invoke')) {
+        throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no invoke method`)
+      }
 
       const config = { configurable: { thread_id: threadId } }
       const result = await agent.invoke(
@@ -499,9 +501,9 @@ export function createAgentManager() {
         config,
       )
 
-      const allMessages = result?.messages ?? []
-      const lastMessage = allMessages.at(-1) as { content?: unknown } | undefined
-      const reply = lastMessage ? extractTextContent(lastMessage.content) : ''
+      const allMessages = isRecord(result) && Array.isArray(result.messages) ? result.messages : []
+      const lastMessage = allMessages.at(-1)
+      const reply = isRecord(lastMessage) ? extractTextContent(lastMessage.content) : ''
       return { reply: reply || '(No response from agent)' }
     },
 
@@ -515,8 +517,12 @@ export function createAgentManager() {
       if (!agentData) throw new AgentError('NOT_FOUND', `Agent "${id}" not found`)
 
       const agent = agentData.agent
-      if (!agent?.stream) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no stream method`)
-      if (!agent?.getState) throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no getState method`)
+      if (!hasAgentMethod(agent, 'stream')) {
+        throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no stream method`)
+      }
+      if (!hasAgentMethod(agent, 'getState')) {
+        throw new AgentError('NOT_FOUND', `Agent "${id}" is invalid or has no getState method`)
+      }
 
       const config = {
         configurable: { thread_id: threadId }
@@ -524,7 +530,7 @@ export function createAgentManager() {
 
       const agentInput = input.resume
         ? new Command({ resume: normalizeApprovalResume(input.resume) })
-        : { messages: [{ role: 'user' as const, content: input.message! }] }
+        : { messages: [{ role: 'user' as const, content: input.message }] }
 
       const stream = await agent.stream(
         agentInput,
@@ -540,7 +546,8 @@ export function createAgentManager() {
       for await (const chunk of stream) {
         if (!Array.isArray(chunk) || chunk.length < 2) continue
 
-        const [mode, payload] = chunk as [string, unknown]
+        const [mode, payload] = chunk
+        if (typeof mode !== 'string') continue
 
         if (mode === 'updates') {
           const interrupt = extractInterrupt(payload)
@@ -555,8 +562,8 @@ export function createAgentManager() {
         }
 
         if (mode === 'messages' && Array.isArray(payload)) {
-          const [messageChunk] = payload as [{ content?: unknown; type?: string }]
-          if (!messageChunk) continue
+          const [messageChunk] = payload
+          if (!isRecord(messageChunk)) continue
 
           const isAiChunk = AIMessageChunk.isInstance(messageChunk) || messageChunk.type === 'ai'
           if (!isAiChunk) continue
@@ -577,7 +584,7 @@ export function createAgentManager() {
         if (mode === 'tools') {
           writer({
             type: 'tool',
-            event: payload as AgentToolStreamEvent
+            event: payload
           })
           continue
         }
@@ -605,15 +612,13 @@ export function createAgentManager() {
       const agentDir = join(agentsDir, agentId)
       return ALLOWED_FILES.map((file) => {
         const filePath = join(agentDir, file)
-        let name = file
-        if (name.endsWith('.ts')) name = name.slice(0, -3)
-        if (name.endsWith('.md')) name = name.slice(0, -3)
+        const name = stripEditableExtension(file)
         let content: string | undefined
         try {
           content = readFileSync(filePath, 'utf-8')
         } catch {
           if (file === 'soul.md') {
-            content = 'Now you are agent for user, soon or leter you become someone'
+            content = 'Now you are agent for user, soon or later you become someone'
           }
         }
         return { id: file, name, content, symlink: false }
@@ -621,7 +626,7 @@ export function createAgentManager() {
     },
 
     updateAgentFile(agentId: string, fileId: string, content: string): void {
-      if (!ALLOWED_FILES.includes(fileId)) {
+      if (!isAllowedFile(fileId)) {
         throw new AgentError('INVALID_INPUT', 'Invalid file id')
       }
       const filePath = join(agentsDir, agentId, fileId)
@@ -634,7 +639,7 @@ export function createAgentManager() {
           .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
           .map((d) => ({
             id: d.name,
-            name: d.name.charAt(0).toUpperCase() + d.name.slice(1).replace(/[-_]/g, ' '),
+            name: formatDisplayName(d.name),
           }))
       } catch {
         return []

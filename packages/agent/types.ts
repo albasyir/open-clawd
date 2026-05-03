@@ -1,4 +1,4 @@
-import type { DynamicStructuredTool } from "langchain"
+import type { DynamicStructuredTool } from '@langchain/core/tools'
 
 export type AgentErrorCode = 'NOT_FOUND' | 'ALREADY_EXISTS' | 'INVALID_INPUT' | 'UPSTREAM_ERROR'
 

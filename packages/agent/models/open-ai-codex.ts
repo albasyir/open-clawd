@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { BaseChatModel } from '@langchain/core/language_models/chat_models'
+import type { BindToolsInput } from '@langchain/core/language_models/chat_models'
+import { isOpenAITool, type FunctionDefinition } from '@langchain/core/language_models/base'
 import {
   AIMessage,
   HumanMessage,
@@ -6,8 +9,10 @@ import {
   ToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages'
+import { convertToOpenAITool } from '@langchain/core/utils/function_calling'
 import { ChatOpenAICompletions } from '@langchain/openai'
 import type { CallbackManagerForLLMRun } from '@langchain/core/callbacks/manager'
+import { isRecord, type UnknownRecord } from '../utils/record.ts'
 
 /** Params accepted by the ChatOpenAICompletions constructor (model, apiKey, configuration, etc.) */
 export type ChatOpenAICompletionsParams = ConstructorParameters<typeof ChatOpenAICompletions>[0]
@@ -15,7 +20,72 @@ export type ChatOpenAICompletionsParams = ConstructorParameters<typeof ChatOpenA
 interface ToolMeta {
   name: string
   description: string
-  parameters: Record<string, any>
+  parameters: FunctionDefinition['parameters']
+}
+
+type ToolParameter = UnknownRecord & {
+  type?: string
+  description?: string
+  enum?: unknown[]
+}
+type RouterToolCall = {
+  name: string
+  arguments?: Record<string, unknown>
+}
+
+function toToolMeta(input: BindToolsInput): ToolMeta {
+  const definition = isOpenAITool(input)
+    ? input
+    : convertToOpenAITool(input)
+
+  return {
+    name: definition.function.name,
+    description: definition.function.description ?? '',
+    parameters: definition.function.parameters,
+  }
+}
+
+function getParameterProperties(parameters: FunctionDefinition['parameters']): Record<string, ToolParameter> {
+  const params: UnknownRecord = isRecord(parameters) ? parameters : {}
+  if (!isRecord(params.properties)) return {}
+
+  return Object.fromEntries(
+    Object.entries(params.properties).filter((entry): entry is [string, ToolParameter] => isRecord(entry[1])),
+  )
+}
+
+function getRequiredParameters(parameters: FunctionDefinition['parameters']): string[] {
+  const params: UnknownRecord = isRecord(parameters) ? parameters : {}
+
+  return Array.isArray(params.required)
+    ? params.required.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+function formatToolParameter(name: string, parameter: ToolParameter, required: string[]): string {
+  const requiredLabel = required.includes(name) ? ' (required)' : ''
+  const description = typeof parameter.description === 'string' ? ` - ${parameter.description}` : ''
+  const enumValues = Array.isArray(parameter.enum)
+    ? ` [values: ${parameter.enum.map(value => `"${String(value)}"`).join(', ')}]`
+    : ''
+  const type = typeof parameter.type === 'string' ? parameter.type : 'string'
+  return `    "${name}": ${type}${enumValues}${requiredLabel}${description}`
+}
+
+function parseRouterToolCall(value: unknown): RouterToolCall | null {
+  if (!isRecord(value) || typeof value.name !== 'string') return null
+
+  return {
+    name: value.name,
+    arguments: isRecord(value.arguments) ? value.arguments : undefined,
+  }
+}
+
+function parseRouterToolCalls(value: unknown): RouterToolCall[] {
+  const values = Array.isArray(value) ? value : [value]
+  return values
+    .map(parseRouterToolCall)
+    .filter((call): call is RouterToolCall => call !== null)
 }
 
 /**
@@ -50,53 +120,19 @@ export default class OpenAICodexModel extends BaseChatModel {
     return 'prompt-tools-chat-model'
   }
 
-  bindTools(tools: any[], kwargs?: any): this {
+  bindTools(tools: BindToolsInput[], _kwargs?: Partial<this['ParsedCallOptions']>): this {
     const bound = new OpenAICodexModel({
       llmParams: this.llmParams,
       llmToolCallParams: this.llmToolCallParams,
     })
-    bound.boundTools = tools.map((t) => {
-      // OpenAI format: {type: "function", function: {name, description, parameters}}
-      if (t.function) {
-        return {
-          name: t.function.name,
-          description: t.function.description ?? '',
-          parameters: t.function.parameters ?? {},
-        }
-      }
-      // LangChain tool (DynamicStructuredTool) with Zod schema
-      let parameters: Record<string, any> = {}
-      if (t.schema) {
-        if (typeof t.schema.toJSONSchema === 'function') {
-          parameters = t.schema.toJSONSchema()
-        } else if (t.schema.shape) {
-          // Fallback: manually extract from Zod shape
-          const props: Record<string, any> = {}
-          const required: string[] = []
-          for (const [key, val] of Object.entries(t.schema.shape)) {
-            const v = val as any
-            props[key] = {
-              type: v.type ?? 'string',
-              ...(v.description ? { description: v.description } : {}),
-            }
-            if (!v.isOptional?.()) required.push(key)
-          }
-          parameters = { type: 'object', properties: props, required }
-        }
-      }
-      return {
-        name: t.name,
-        description: t.description ?? '',
-        parameters,
-      }
-    })
+    bound.boundTools = tools.map(toToolMeta)
     return bound as this
   }
 
   async _generate(
     messages: BaseMessage[],
-    options: this['ParsedCallOptions'],
-    runManager?: CallbackManagerForLLMRun,
+    _options: this['ParsedCallOptions'],
+    _runManager?: CallbackManagerForLLMRun,
   ) {
     if (this.boundTools.length === 0) {
       const result = await this.llm.invoke(messages)
@@ -107,15 +143,14 @@ export default class OpenAICodexModel extends BaseChatModel {
 
     const flat = this.flattenMessages(messages)
 
-    const routerResult = await this.callRouter(flat)
-    const calls = Array.isArray(routerResult) ? routerResult : (routerResult ? [routerResult] : [])
+    const calls = await this.callRouter(flat)
     const listToolsOnly = calls.some((c) => c.name === '__list_tools__')
     const validCalls = calls.filter((c) => c.name && c.name !== 'none' && c.name !== '__list_tools__')
 
     if (listToolsOnly) {
       const toolsListText = this.boundTools
         .map((t) => {
-          const params = t.parameters?.properties ?? {}
+          const params = getParameterProperties(t.parameters)
           const paramStr = Object.keys(params).length
             ? ` (${Object.keys(params).join(', ')})`
             : ''
@@ -140,7 +175,7 @@ export default class OpenAICodexModel extends BaseChatModel {
       const msg = new AIMessage({
         content: '',
         tool_calls: validCalls.map((c) => ({
-          id: `call_${crypto.randomUUID()}`,
+          id: `call_${randomUUID()}`,
           name: c.name,
           args: c.arguments ?? {},
         })),
@@ -167,7 +202,7 @@ export default class OpenAICodexModel extends BaseChatModel {
     for (const msg of messages) {
       if (AIMessage.isInstance(msg) && msg.tool_calls && msg.tool_calls.length > 0) {
         const callSummary = msg.tool_calls
-          .map((tc: any) => `Called tool "${tc.name}" with ${JSON.stringify(tc.args)}`)
+          .map((toolCall) => `Called tool "${toolCall.name}" with ${JSON.stringify(toolCall.args)}`)
           .join('; ')
         result.push(new AIMessage(callSummary))
         continue
@@ -191,17 +226,12 @@ export default class OpenAICodexModel extends BaseChatModel {
    */
   private async callRouter(
     conversationMessages: BaseMessage[],
-  ): Promise<{ name: string; arguments?: Record<string, any> }[]> {
+  ): Promise<RouterToolCall[]> {
     const toolDefs = this.boundTools.map((t) => {
-      const props = t.parameters?.properties ?? {}
-      const required = t.parameters?.required ?? []
+      const props = getParameterProperties(t.parameters)
+      const required = getRequiredParameters(t.parameters)
       const paramLines = Object.entries(props)
-        .map(([k, v]: [string, any]) => {
-          const req = required.includes(k) ? ' (required)' : ''
-          const desc = v.description ? ` - ${v.description}` : ''
-          const enumVals = v.enum ? ` [values: ${v.enum.map((e: any) => `"${e}"`).join(', ')}]` : ''
-          return `    "${k}": ${v.type ?? 'string'}${enumVals}${req}${desc}`
-        })
+        .map(([name, parameter]) => formatToolParameter(name, parameter, required))
         .join('\n')
       const exampleArgs = Object.fromEntries(
         Object.entries(props).map(([k]) => [k, `<${k}>`])
@@ -223,12 +253,12 @@ export default class OpenAICodexModel extends BaseChatModel {
       '# RULES\n' +
       '- If ONE tool is needed, respond: [{"name": "<tool>", "arguments": {<params>}}]\n' +
       '- If MULTIPLE tools are needed, return ALL of them in one response: [{"name": "<tool1>", "arguments": {...}}, {"name": "<tool2>", "arguments": {...}}, ...]. Do not omit any tool that is needed for the answer.\n' +
-      '- If the user asks to list or show all tools (e.g. "what tools do you have?", "list all tools"), respond with ONLY: [{"name": "__list_tools__"}]. Do NOT return real tool names — we will list them without executing.\n' +
+      '- If the user asks to list or show all tools (e.g. "what tools do you have?", "list all tools"), respond with ONLY: [{"name": "__list_tools__"}]. Do NOT return real tool names - we will list them without executing.\n' +
       '- If the conversation is already fully answered or no tool is needed, respond: [{"name": "none"}]\n' +
       '- If some parts are answered (by previous tool results) but other parts still need a tool, return ONLY the unanswered tool calls.\n' +
       'Output ONLY a JSON array.'
 
-    const lastMessage = conversationMessages.slice(-1)[0];
+    const lastMessage = conversationMessages.at(-1)
 
     const response = await this.llmToolCall.invoke([
       new SystemMessage(routerSystemPrompt),
@@ -238,7 +268,7 @@ export default class OpenAICodexModel extends BaseChatModel {
     const content = (typeof response.content === 'string' ? response.content : '').trim()
     try {
       const parsed = JSON.parse(content)
-      return Array.isArray(parsed) ? parsed : [parsed]
+      return parseRouterToolCalls(parsed)
     } catch {
       return []
     }
