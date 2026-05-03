@@ -4,7 +4,7 @@ import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { resolveBaseDir } from '../../services/resolve-base.ts'
 
-const getRelevantSkillSchema = z.object({})
+const getSkillListSchema = z.object({})
 
 type SkillSummary = {
   id: string
@@ -80,7 +80,7 @@ async function collectSkills(root: string, dir = root): Promise<SkillSummary[]> 
   return skills.sort((a, b) => a.id.localeCompare(b.id))
 }
 
-export const getRelevantSkillTool = tool(
+export const getSkillListTool = tool(
   async () => {
     const root = getSkillsRoot()
     const skills = await collectSkills(root)
@@ -91,9 +91,9 @@ export const getRelevantSkillTool = tool(
     }
   },
   {
-    name: 'get_relevant_skill',
+    name: 'get_skill_list',
     description:
-      'List available agent skills with ids, names, and descriptions so a relevant skill can be selected.',
-    schema: getRelevantSkillSchema,
+      'List available agent skills with ids, names, and descriptions.',
+    schema: getSkillListSchema,
   },
 )

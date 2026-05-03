@@ -9,7 +9,7 @@ const getSkillDetailSchema = z.object({
     .string()
     .trim()
     .min(1)
-    .describe('Skill id returned by get_relevant_skill. Short unique names are accepted.'),
+    .describe('Skill id returned by get_skill_list. Short unique names are accepted.'),
 })
 
 type GetSkillDetailInput = z.infer<typeof getSkillDetailSchema>
@@ -112,7 +112,7 @@ export const getSkillDetailTool = tool(
   {
     name: 'get_skill_detail',
     description:
-      'Get the full SKILL.md content for a selected skill id from get_relevant_skill.',
+      'Get the full SKILL.md content for a selected skill id from get_skill_list.',
     schema: getSkillDetailSchema,
   },
 )
